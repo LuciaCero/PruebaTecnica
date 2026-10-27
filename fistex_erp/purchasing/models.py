@@ -106,3 +106,75 @@ class Producto(models.Model):
         self.full_clean()
         super().save(*args, **kwargs)
 
+
+# ==========================================
+# Pedido de compra
+# ==========================================
+
+class PedidoCompra(models.Model):
+    class Estado(models.TextChoices):
+        BORRADOR = "borrador", "Borrador"
+        CONFIRMADO = "confirmado", "Confirmado"
+        RECIBIDO = "recibido", "Recibido"
+        CANCELADO = "cancelado", "Cancelado"
+
+    numero = models.CharField(
+        "número de pedido",
+        max_length=20,
+        unique=True,
+        null=True,
+        blank=True,
+        editable=False,
+    )
+
+    proveedor = models.ForeignKey(
+        Proveedor,
+        on_delete=models.PROTECT,   # No se puede eliminar un proveedor con pedidos
+        related_name="pedidos",
+        verbose_name="proveedor",
+    )
+
+    fecha = models.DateField("fecha", default=timezone.localdate)
+
+    estado = models.CharField(
+        "estado",
+        max_length=10,
+        choices=Estado.choices,
+        default=Estado.BORRADOR,
+        editable=False,
+    )
+
+    class Meta:
+        ordering = ["-fecha", "-id"]
+        verbose_name = "pedido de compra"
+        verbose_name_plural = "pedidos de compra"
+ 
+    def __str__(self):
+        return self.numero or "Pedido sin guardar"
+ 
+    def save(self, *args, **kwargs):
+        # Aseguramos ejecutar este bloque de manera atómica
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if not self.numero:
+                self.numero = f"PC-{self.pk:06d}"
+                super().save(update_fields=["numero"])
+
+    @property
+    def total(self) -> Decimal:
+        """Total del pedido calculado en BD con el ORM (no se almacena)"""
+        if self.pk is None:
+            return Decimal("0.00")
+        resultado = self.lineas.aggregate(
+            total=Sum(
+                F("cantidad") * F("precio_unitario"),
+                output_field=DecimalField(max_digits=14, decimal_places=2),
+            )
+        )
+        return resultado["total"] or Decimal("0.00")
+
+
+# ==========================================
+# Línea de pedido
+# ==========================================
+
