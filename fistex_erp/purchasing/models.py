@@ -178,3 +178,63 @@ class PedidoCompra(models.Model):
 # Línea de pedido
 # ==========================================
 
+class LineaPedido(models.Model):
+    pedido = models.ForeignKey(
+        PedidoCompra,
+        on_delete=models.CASCADE,   # Las líneas no tienen sentido sin su pedido
+        related_name="lineas",
+        verbose_name="pedido",
+    )
+
+    producto = models.ForeignKey(
+        Producto,
+        on_delete=models.PROTECT,   # No se puede borrar un producto con historial
+        related_name="lineas_pedido",
+        verbose_name="producto",
+    )
+
+    cantidad = models.PositiveIntegerField(
+        "cantidad",
+        validators=[MinValueValidator(1)],  # No tendría sentido una linea de cantidad 0
+    )
+
+    # Precio propio de la línea (copiada en el momento del pedido)
+    # No es una lectura en vivo de producto.precio_compra
+    # Permite que el historial no cambie
+    precio_unitario = models.DecimalField(
+        "precio unitario",
+        max_digits=10,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "línea de pedido"
+        verbose_name_plural = "líneas de pedido"
+        constraints = [
+            # Restriccion: tiene que haber al menos una linea
+            models.CheckConstraint(
+                condition=Q(cantidad__gte=1),
+                name="linea_cantidad_minima_1",
+            ),
+            # Restriccion: el precio unitario debe ser positivo
+            models.CheckConstraint(
+                condition=Q(precio_unitario__gte=0),
+                name="linea_precio_unitario_no_negativo",
+            ),
+            # Restriccion: un producto solo puede aparecer una vez por linea (si se quisieran mas se modifica la cantidad)
+            models.UniqueConstraint(
+                fields=["pedido", "producto"],
+                name="linea_producto_unico_por_pedido",
+            ),
+        ]
+ 
+    def __str__(self):
+        return f"{self.producto} x {self.cantidad}"
+ 
+    @property
+    def subtotal(self) -> Decimal:
+        if self.cantidad is None or self.precio_unitario is None:
+            return Decimal("0.00")
+        return self.cantidad * self.precio_unitario
