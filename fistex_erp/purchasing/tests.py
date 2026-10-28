@@ -1,3 +1,277 @@
+from decimal import Decimal
+from datetime import timedelta
+
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-# Create your tests here.
+from .models import LineaPedido, PedidoCompra, Producto, Proveedor
+
+
+class ProveedorTests(TestCase):
+    def test_save_only_converts_cif_nif_to_uppercase(self):
+        proveedor = Proveedor.objects.create(
+            nombre="Proveedor de prueba",
+            cif_nif="a12345678",
+            email="proveedor@example.com",
+        )
+
+        self.assertEqual(proveedor.cif_nif, "A12345678")
+
+    def test_save_rejects_cif_nif_longer_than_nine_characters(self):
+        proveedor = Proveedor(
+            nombre="Proveedor de prueba",
+            cif_nif="B123456789",
+            email="proveedor@example.com",
+        )
+
+        with self.assertRaises(ValidationError):
+            proveedor.save()
+
+    def test_cif_nif_must_be_unique(self):
+        Proveedor.objects.create(
+            nombre="Proveedor original",
+            cif_nif="B12345678",
+            email="original@example.com",
+        )
+
+        with self.assertRaises(ValidationError):
+            Proveedor.objects.create(
+                nombre="Proveedor duplicado",
+                cif_nif="b12345678",
+                email="duplicado@example.com",
+            )
+
+    def test_order_without_provider_fails_validation_cleanly(self):
+        pedido = PedidoCompra()
+
+        with self.assertRaises(ValidationError):
+            pedido.full_clean()
+
+
+class ProductoTests(TestCase):
+    def test_reference_must_be_unique_after_normalization(self):
+        Producto.objects.create(
+            referencia="prod-01",
+            nombre="Primer producto",
+            precio_compra="10.00",
+        )
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Producto.objects.create(
+                referencia=" PROD -01 ",
+                nombre="Producto duplicado",
+                precio_compra="12.00",
+            )
+
+    def test_purchase_price_cannot_be_negative(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Producto.objects.create(
+                referencia="prod-neg",
+                nombre="Producto con precio negativo",
+                precio_compra="-1.00",
+            )
+
+
+class LineaPedidoTests(TestCase):
+    def setUp(self):
+        self.proveedor = Proveedor.objects.create(
+            nombre="Proveedor de prueba",
+            cif_nif="B12345678",
+            email="proveedor@example.com",
+        )
+        self.producto = Producto.objects.create(
+            referencia="prod-01",
+            nombre="Producto de prueba",
+            precio_compra="10.00",
+        )
+        self.pedido = PedidoCompra.objects.create(proveedor=self.proveedor)
+        self.linea = LineaPedido.objects.create(
+            pedido=self.pedido,
+            producto=self.producto,
+            cantidad=1,
+            precio_unitario="10.00",
+        )
+
+    def test_confirmed_order_lines_cannot_be_changed_or_deleted(self):
+        self.pedido.confirmar()
+
+        self.linea.cantidad = 2
+        with self.assertRaises(ValidationError):
+            self.linea.save()
+
+        with self.assertRaises(ValidationError):
+            self.linea.delete()
+
+    def test_line_can_be_changed_while_order_is_draft(self):
+        self.linea.cantidad = 2
+        self.linea.save()
+
+        self.assertEqual(
+            LineaPedido.objects.get(pk=self.linea.pk).cantidad,
+            2,
+        )
+
+    def test_adding_existing_product_increases_quantity_and_keeps_price(self):
+        self.producto.precio_compra = Decimal("12.00")
+        self.producto.save()
+
+        linea = self.pedido.agregar_producto(self.producto, cantidad=3)
+
+        self.assertEqual(linea.pk, self.linea.pk)
+        self.assertEqual(linea.cantidad, 4)
+        self.assertEqual(linea.precio_unitario, Decimal("10.00"))
+        self.assertEqual(self.pedido.lineas.count(), 1)
+
+    def test_adding_new_product_creates_line_at_current_price(self):
+        producto_dos = Producto.objects.create(
+            referencia="prod-02",
+            nombre="Segundo producto",
+            precio_compra="3.50",
+        )
+
+        linea = self.pedido.agregar_producto(producto_dos, cantidad=2)
+
+        self.assertEqual(linea.cantidad, 2)
+        self.assertEqual(linea.precio_unitario, Decimal("3.50"))
+        self.assertEqual(self.pedido.lineas.count(), 2)
+
+    def test_adding_product_rejects_invalid_quantity_or_non_draft_order(self):
+        with self.assertRaises(ValidationError):
+            self.pedido.agregar_producto(self.producto, cantidad=0)
+
+        self.pedido.confirmar()
+        with self.assertRaises(ValidationError):
+            self.pedido.agregar_producto(self.producto)
+
+    def test_quantity_must_be_at_least_one(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            LineaPedido.objects.create(
+                pedido=self.pedido,
+                producto=self.producto,
+                cantidad=0,
+                precio_unitario="10.00",
+            )
+
+    def test_unit_price_cannot_be_negative(self):
+        producto_dos = Producto.objects.create(
+            referencia="prod-02",
+            nombre="Segundo producto",
+            precio_compra="10.00",
+        )
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            LineaPedido.objects.create(
+                pedido=self.pedido,
+                producto=producto_dos,
+                cantidad=1,
+                precio_unitario="-1.00",
+            )
+
+    def test_confirmed_order_can_be_received(self):
+        self.pedido.confirmar()
+        self.pedido.recibir()
+
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.estado, PedidoCompra.Estado.RECIBIDO)
+
+    def test_order_number_and_total_are_calculated(self):
+        producto_dos = Producto.objects.create(
+            referencia="prod-02",
+            nombre="Segundo producto",
+            precio_compra="3.50",
+        )
+        LineaPedido.objects.create(
+            pedido=self.pedido,
+            producto=producto_dos,
+            cantidad=2,
+            precio_unitario="3.50",
+        )
+
+        self.assertEqual(self.pedido.numero, f"PC-{self.pedido.pk:06d}")
+        self.assertEqual(self.pedido.total, Decimal("17.00"))
+
+    def test_order_without_lines_cannot_be_confirmed(self):
+        pedido_vacio = PedidoCompra.objects.create(proveedor=self.proveedor)
+
+        with self.assertRaises(ValidationError):
+            pedido_vacio.confirmar()
+
+    def test_invalid_order_state_transitions_are_rejected(self):
+        with self.assertRaises(ValidationError):
+            self.pedido.recibir()
+
+        self.pedido.confirmar()
+        self.pedido.recibir()
+
+        with self.assertRaises(ValidationError):
+            self.pedido.cancelar()
+
+    def test_canceled_order_cannot_be_received(self):
+        self.pedido.cancelar()
+
+        with self.assertRaises(ValidationError):
+            self.pedido.recibir()
+
+    def test_inactive_provider_cannot_be_assigned_to_an_order(self):
+        proveedor_inactivo = Proveedor.objects.create(
+            nombre="Proveedor inactivo",
+            cif_nif="C12345678",
+            email="inactivo@example.com",
+            activo=False,
+        )
+
+        with self.assertRaises(ValidationError):
+            PedidoCompra.objects.create(proveedor=proveedor_inactivo)
+
+        self.pedido.proveedor = proveedor_inactivo
+        with self.assertRaises(ValidationError):
+            self.pedido.save()
+
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.proveedor_id, self.proveedor.pk)
+
+    def test_inactive_provider_cannot_confirm_an_order(self):
+        self.proveedor.activo = False
+        self.proveedor.save()
+
+        with self.assertRaises(ValidationError):
+            self.pedido.confirmar()
+
+    def test_deactivating_provider_keeps_order_history(self):
+        self.proveedor.activo = False
+        self.proveedor.save()
+
+        pedido_guardado = PedidoCompra.objects.get(pk=self.pedido.pk)
+        self.assertFalse(pedido_guardado.proveedor.activo)
+        self.assertEqual(pedido_guardado.lineas.count(), 1)
+
+    def test_confirmed_order_cannot_be_deleted(self):
+        self.pedido.confirmar()
+
+        with self.assertRaises(ValidationError):
+            self.pedido.delete()
+
+    def test_confirmed_order_header_cannot_be_changed(self):
+        self.pedido.confirmar()
+        fecha_original = self.pedido.fecha
+        proveedor_original_id = self.pedido.proveedor_id
+
+        self.pedido.fecha = fecha_original + timedelta(days=1)
+        with self.assertRaises(ValidationError):
+            self.pedido.save(update_fields=["fecha"])
+
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.fecha, fecha_original)
+
+        otro_proveedor = Proveedor.objects.create(
+            nombre="Otro proveedor",
+            cif_nif="A12345678",
+            email="otro@example.com",
+        )
+        self.pedido.proveedor = otro_proveedor
+        with self.assertRaises(ValidationError):
+            self.pedido.save()
+
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.proveedor_id, proveedor_original_id)
