@@ -102,8 +102,7 @@ class Producto(models.Model):
         self.referencia = normalizar_referencia(self.referencia)
 
     def save(self, *args, **kwargs):
-        # Hacemos un full clean antes de guardar los datos
-        self.full_clean()
+        self.referencia = normalizar_referencia(self.referencia)
         super().save(*args, **kwargs)
 
 
@@ -173,6 +172,56 @@ class PedidoCompra(models.Model):
         )
         return resultado["total"] or Decimal("0.00")
 
+    TRANSICIONES = {
+        Estado.BORRADOR: {Estado.CONFIRMADO, Estado.CANCELADO},
+        Estado.CONFIRMADO: {Estado.RECIBIDO, Estado.CANCELADO},
+        Estado.RECIBIDO: set(),
+        Estado.CANCELADO: set(),
+    }
+
+    def cambiar_estado(self, nuevo):
+        with transaction.atomic():
+            actual = type(self).objects.select_for_update().get(pk=self.pk).estado
+            if nuevo not in self.TRANSICIONES[actual]:
+                raise ValidationError(
+                    f"No se puede pasar un pedido de '{actual}' a '{nuevo}'."
+                )
+            self.estado = nuevo
+            self.save(update_fields=["estado"])
+
+    def confirmar(self):
+        if self.lineas.count() <= 0:
+            raise ValidationError("No se puede confirmar un pedido que no tiene ninguna linea")
+        if not self.proveedor.activo:
+            raise ValidationError("No se puede confirmar un pedido de un proveedor inactivo")
+        self.cambiar_estado(self.Estado.CONFIRMADO)
+
+    def recibir(self):
+        self.cambiar_estado(self.Estado.RECIBIDO)
+
+    def cancelar(self):
+        self.cambiar_estado(self.Estado.CANCELADO)
+
+    def validar_pedido_editable(self):
+        # Pedido aun no guardado
+        if self.pedido_id is None: 
+            return
+        estado = PedidoCompra.objects.values_list("estado", flat=True).get(pk=self.pedido_id)
+        if estado != PedidoCompra.Estado.BORRADOR:
+            raise ValidationError("Solo se pueden modificar las líneas de un pedido en borrador.")
+
+    def clean(self):
+        if not self.proveedor.activo:
+            raise ValidationError("No se puede crear un pedido de un proveedor inactivo")
+        self.validar_pedido_editable()
+
+    def save(self, *args, **kwargs):
+        self.validar_pedido_editable()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self.validar_pedido_editable()
+        return super().delete(*args, **kwargs)
 
 # ==========================================
 # Línea de pedido
