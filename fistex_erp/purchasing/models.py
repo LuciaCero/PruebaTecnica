@@ -132,6 +132,48 @@ class PedidoCompra(models.Model):
  
     def save(self, *args, **kwargs):
         with transaction.atomic():
+            pedido_actual = None
+            if self.pk is not None:
+                pedido_actual = type(self).objects.select_for_update().get(pk=self.pk)
+                if pedido_actual.estado != self.Estado.BORRADOR:
+                    update_fields = kwargs.get("update_fields")
+                    campos_cabecera = {
+                        "proveedor_id": {"proveedor", "proveedor_id"},
+                        "fecha": {"fecha"},
+                        "numero": {"numero"},
+                    }
+                    for campo, nombres in campos_cabecera.items():
+                        if update_fields is not None and not nombres.intersection(update_fields):
+                            continue
+                        if getattr(self, campo) != getattr(pedido_actual, campo):
+                            raise ValidationError(
+                                "No se puede modificar la cabecera de un pedido "
+                                "que ya no está en borrador."
+                            )
+
+            update_fields = kwargs.get("update_fields")
+            proveedor_se_guarda = (
+                pedido_actual is None
+                or update_fields is None
+                or {"proveedor", "proveedor_id"}.intersection(update_fields)
+            )
+            proveedor_cambia = (
+                pedido_actual is None
+                or self.proveedor_id != pedido_actual.proveedor_id
+            )
+            if (
+                proveedor_se_guarda
+                and proveedor_cambia
+                and self.proveedor_id
+                and not Proveedor.objects.filter(
+                    pk=self.proveedor_id,
+                    activo=True,
+                ).exists()
+            ):
+                raise ValidationError(
+                    {"proveedor": "No se puede asignar un proveedor inactivo a un pedido."}
+                )
+
             super().save(*args, **kwargs)
             if not self.numero:
                 self.numero = f"PC-{self.pk:06d}"
@@ -254,6 +296,32 @@ class LineaPedido(models.Model):
  
     def __str__(self):
         return f"{self.producto} x {self.cantidad}"
+
+    def validar_pedido_editable(self):
+        pedidos_ids = {self.pedido_id}
+        if self.pk is not None:
+            pedido_original_id = (
+                type(self).objects.filter(pk=self.pk)
+                .values_list("pedido_id", flat=True)
+                .first()
+            )
+            if pedido_original_id is not None:
+                pedidos_ids.add(pedido_original_id)
+
+        for pedido_id in pedidos_ids:
+            if pedido_id is not None:
+                PedidoCompra.objects.get(pk=pedido_id).validar_pedido_editable()
+
+    def clean(self):
+        self.validar_pedido_editable()
+
+    def save(self, *args, **kwargs):
+        self.validar_pedido_editable()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self.validar_pedido_editable()
+        return super().delete(*args, **kwargs)
  
     @property
     def subtotal(self) -> Decimal:
