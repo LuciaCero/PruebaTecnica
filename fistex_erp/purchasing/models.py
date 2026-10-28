@@ -222,6 +222,29 @@ class PedidoCompra(models.Model):
     def cancelar(self):
         self.cambiar_estado(self.Estado.CANCELADO)
 
+    def agregar_producto(self, producto, cantidad=1):
+        if cantidad < 1:
+            raise ValidationError("La cantidad debe ser al menos 1.")
+        if self.pk is None:
+            raise ValidationError("Guarda el pedido antes de añadir productos.")
+
+        with transaction.atomic():
+            pedido = type(self).objects.select_for_update().get(pk=self.pk)
+            pedido.validar_pedido_editable()
+            linea, creada = LineaPedido.objects.get_or_create(
+                pedido=pedido,
+                producto=producto,
+                defaults={
+                    "cantidad": cantidad,
+                    "precio_unitario": Decimal(str(producto.precio_compra)),
+                },
+            )
+            if not creada:
+                linea.cantidad += cantidad
+                linea.save(update_fields=["cantidad"])
+
+        return linea
+
     def validar_pedido_editable(self):
         if self.pk is None:
             return
