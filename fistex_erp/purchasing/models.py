@@ -10,20 +10,17 @@ from django.utils import timezone
 # Proveedor
 # ==========================================
 
-# Restricción para el numero del CIF/NIF
-LONGITUD_CIF_NIF = 9
-
 def normalizar_cif_nif(valor: str) -> str:
-    """Quita espacios y guiones y pasa a mayúsculas: 'b-123 456' -> 'B123456'"""
-    return "".join(valor.split()).replace("-", "").upper()
+    return valor.upper()
 
 class Proveedor(models.Model):
     nombre = models.CharField("nombre comercial", max_length=200)
     cif_nif = models.CharField(
-        "CIF/NIF", 
-        max_length=20, 
+        "CIF/NIF",
+        max_length=9,
         unique=True,
-        help_text=f"Debe tener {LONGITUD_CIF_NIF} caracteres. Se ignoran espacios y guiones.")
+        help_text="Máximo 9 caracteres.",
+    )
     email = models.EmailField("email")
     activo = models.BooleanField("activo", default=True)
     fecha_alta = models.DateTimeField("fecha de alta", auto_now_add=True)
@@ -32,30 +29,12 @@ class Proveedor(models.Model):
         ordering = ["nombre"]
         verbose_name = "proveedor"
         verbose_name_plural = "proveedores"
-        constraints = [
-            # Restriccion: Debe ser alfanumerico y un numero de digitos concreto
-            models.CheckConstraint(
-                condition=models.Q(cif_nif__regex=rf"^[A-Z0-9]{LONGITUD_CIF_NIF}$"),
-                name="cif_nif_formato_valido",
-            )
-        ]
 
     def __str__(self):
         return f"{self.nombre} ({self.cif_nif})"
 
     def clean(self):
-        normalizado = normalizar_cif_nif(self.cif_nif)
-
-        # Restriccion: Debe ser alfanumerico y numero de digitos
-        if ( 
-            len(normalizado) != LONGITUD_CIF_NIF
-            or not (normalizado.isascii() and normalizado.isalnum())
-        ):
-            raise ValidationError(
-                {"cif_nif": f"El CIF/NIF debe tener {LONGITUD_CIF_NIF} caracteres alfanuméricos."}
-            )
-        
-        self.cif_nif = normalizado
+        self.cif_nif = normalizar_cif_nif(self.cif_nif)
 
     def save(self, *args, **kwargs):
         # Hacemos un full clean antes de guardar los datos
@@ -152,7 +131,6 @@ class PedidoCompra(models.Model):
         return self.numero or "Pedido sin guardar"
  
     def save(self, *args, **kwargs):
-        # Aseguramos ejecutar este bloque de manera atómica
         with transaction.atomic():
             super().save(*args, **kwargs)
             if not self.numero:
@@ -192,7 +170,7 @@ class PedidoCompra(models.Model):
     def confirmar(self):
         if self.lineas.count() <= 0:
             raise ValidationError("No se puede confirmar un pedido que no tiene ninguna linea")
-        if not self.proveedor.activo:
+        if not Proveedor.objects.filter(pk=self.proveedor_id, activo=True).exists():
             raise ValidationError("No se puede confirmar un pedido de un proveedor inactivo")
         self.cambiar_estado(self.Estado.CONFIRMADO)
 
@@ -203,21 +181,16 @@ class PedidoCompra(models.Model):
         self.cambiar_estado(self.Estado.CANCELADO)
 
     def validar_pedido_editable(self):
-        # Pedido aun no guardado
-        if self.pedido_id is None: 
+        if self.pk is None:
             return
-        estado = PedidoCompra.objects.values_list("estado", flat=True).get(pk=self.pedido_id)
+        estado = type(self).objects.values_list("estado", flat=True).get(pk=self.pk)
         if estado != PedidoCompra.Estado.BORRADOR:
             raise ValidationError("Solo se pueden modificar las líneas de un pedido en borrador.")
 
     def clean(self):
-        if not self.proveedor.activo:
+        if self.proveedor_id and not self.proveedor.activo:
             raise ValidationError("No se puede crear un pedido de un proveedor inactivo")
         self.validar_pedido_editable()
-
-    def save(self, *args, **kwargs):
-        self.validar_pedido_editable()
-        super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         self.validar_pedido_editable()
