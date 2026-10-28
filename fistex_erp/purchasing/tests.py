@@ -192,6 +192,28 @@ class LineaPedidoTests(TestCase):
         self.assertEqual(linea.precio_unitario, Decimal("3.50"))
         self.assertEqual(self.pedido.lineas.count(), 2)
 
+    def test_inactive_product_cannot_be_added_to_an_order(self):
+        self.producto.activo = False
+        self.producto.save()
+
+        with self.assertRaises(ValidationError):
+            self.pedido.agregar_producto(self.producto)
+
+        with self.assertRaises(ValidationError):
+            LineaPedido.objects.create(
+                pedido=self.pedido,
+                producto=self.producto,
+                cantidad=1,
+                precio_unitario="10.00",
+            )
+
+    def test_order_with_product_deactivated_after_adding_cannot_be_confirmed(self):
+        self.producto.activo = False
+        self.producto.save()
+
+        with self.assertRaises(ValidationError):
+            self.pedido.confirmar()
+
     def test_adding_product_rejects_invalid_quantity_or_non_draft_order(self):
         with self.assertRaises(ValidationError):
             self.pedido.agregar_producto(self.producto, cantidad=0)

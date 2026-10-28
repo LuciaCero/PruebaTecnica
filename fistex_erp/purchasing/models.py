@@ -214,6 +214,8 @@ class PedidoCompra(models.Model):
             raise ValidationError("No se puede confirmar un pedido que no tiene ninguna linea")
         if not Proveedor.objects.filter(pk=self.proveedor_id, activo=True).exists():
             raise ValidationError("No se puede confirmar un pedido de un proveedor inactivo")
+        if self.lineas.filter(producto__activo=False).exists():
+            raise ValidationError("No se puede confirmar un pedido con productos inactivos.")
         self.cambiar_estado(self.Estado.CONFIRMADO)
 
     def recibir(self):
@@ -337,9 +339,23 @@ class LineaPedido(models.Model):
 
     def clean(self):
         self.validar_pedido_editable()
+        if self.producto_id and not Producto.objects.filter(
+            pk=self.producto_id,
+            activo=True,
+        ).exists():
+            raise ValidationError(
+                {"producto": "No se puede añadir un producto inactivo a un pedido."}
+            )
 
     def save(self, *args, **kwargs):
         self.validar_pedido_editable()
+        if self.producto_id and not Producto.objects.filter(
+            pk=self.producto_id,
+            activo=True,
+        ).exists():
+            raise ValidationError(
+                {"producto": "No se puede añadir un producto inactivo a un pedido."}
+            )
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
