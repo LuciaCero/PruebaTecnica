@@ -1,10 +1,13 @@
 from django.contrib import admin
+from django import forms
+from django.db.models import Q
 from unfold.admin import ModelAdmin, TabularInline
 from .models import Proveedor, PedidoCompra, Producto, LineaPedido
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db.models import DecimalField, F, Sum
 from unfold.decorators import display
+from unfold.widgets import UnfoldAdminSelectWidget
 
 # Register your models here.
 
@@ -49,15 +52,86 @@ class ProductoAdmin(ModelAdmin):
     def desactivar_productos(self, request, queryset):
         actualizar_estado_activo(self, request, queryset, False, "producto")
 
+class ProductoPrecioSelect(UnfoldAdminSelectWidget):
+    def create_option(
+        self,
+        name,
+        value,
+        label,
+        selected,
+        index,
+        subindex=None,
+        attrs=None,
+    ):
+        option = super().create_option(
+            name,
+            value,
+            label,
+            selected,
+            index,
+            subindex=subindex,
+            attrs=attrs,
+        )
+        producto = getattr(value, "instance", None)
+        if producto is not None:
+            option["attrs"]["data-precio-compra"] = str(producto.precio_compra)
+        return option
+
+
+class LineaPedidoInlineForm(forms.ModelForm):
+    class Meta:
+        model = LineaPedido
+        fields = ("producto", "cantidad", "precio_unitario")
+        widgets = {"producto": ProductoPrecioSelect}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        productos = Producto.objects.filter(activo=True)
+        if self.instance.pk and not self.instance.producto.activo:
+            productos = Producto.objects.filter(
+                Q(activo=True) | Q(pk=self.instance.producto_id)
+            )
+        self.fields["producto"].queryset = productos
+        if not self.instance.pk:
+            self.fields["precio_unitario"].required = False
+
+    def clean(self):
+        cleaned_data = super().clean()
+        producto = cleaned_data.get("producto")
+        precio_unitario = cleaned_data.get("precio_unitario")
+        if producto is not None and precio_unitario is None and not self.instance.pk:
+            cleaned_data["precio_unitario"] = producto.precio_compra
+        return cleaned_data
+
+
+class PedidoCompraAdminForm(forms.ModelForm):
+    class Meta:
+        model = PedidoCompra
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        proveedores = Proveedor.objects.filter(activo=True)
+        if self.instance.pk and not self.instance.proveedor.activo:
+            proveedores = Proveedor.objects.filter(
+                Q(activo=True) | Q(pk=self.instance.proveedor_id)
+            )
+        self.fields["proveedor"].queryset = proveedores
+
+
 class LineaPedidoInline(TabularInline):
     model = LineaPedido
+    form = LineaPedidoInlineForm
     extra = 1
     fields = ("producto", "cantidad", "precio_unitario")
+    class Media:
+        js = ("purchasing/admin_pedido.js",)
 
 @admin.register(PedidoCompra)
 class PedidoCompraAdmin(ModelAdmin):
     # Display de las lineas de pedido
     inlines = [LineaPedidoInline]
+    form = PedidoCompraAdminForm
 
     # Columnas y filtros
     list_display = ("numero", "proveedor", "fecha", "estado_con_etiqueta", "total")

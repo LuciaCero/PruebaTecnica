@@ -7,7 +7,12 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import RequestFactory, TestCase
 
-from .admin import ProductoAdmin, ProveedorAdmin
+from .admin import (
+    LineaPedidoInlineForm,
+    PedidoCompraAdminForm,
+    ProductoAdmin,
+    ProveedorAdmin,
+)
 from .models import LineaPedido, PedidoCompra, Producto, Proveedor
 
 
@@ -104,6 +109,47 @@ class ProveedorTests(TestCase):
         with self.assertRaises(ValidationError):
             pedido.full_clean()
 
+    def test_order_admin_hides_inactive_providers_for_new_orders(self):
+        proveedor_inactivo = Proveedor.objects.create(
+            nombre="Proveedor inactivo",
+            cif_nif="C12345678",
+            email="inactivo@example.com",
+            activo=False,
+        )
+        form = PedidoCompraAdminForm()
+
+        self.assertQuerySetEqual(
+            form.fields["proveedor"].queryset,
+            [],
+        )
+        self.assertNotIn(proveedor_inactivo, form.fields["proveedor"].queryset)
+
+    def test_order_admin_keeps_inactive_provider_visible_on_existing_order(self):
+        proveedor_inactivo = Proveedor.objects.create(
+            nombre="Proveedor inactivo",
+            cif_nif="C12345678",
+            email="inactivo@example.com",
+            activo=False,
+        )
+        proveedor_activo = Proveedor.objects.create(
+            nombre="Proveedor activo",
+            cif_nif="D12345678",
+            email="activo@example.com",
+        )
+        pedido = PedidoCompra.objects.create(
+            proveedor=proveedor_activo,
+        )
+        PedidoCompra.objects.filter(pk=pedido.pk).update(
+            proveedor=proveedor_inactivo
+        )
+        pedido.refresh_from_db()
+        form = PedidoCompraAdminForm(instance=pedido)
+
+        self.assertQuerySetEqual(
+            form.fields["proveedor"].queryset,
+            [proveedor_activo, proveedor_inactivo],
+        )
+
 
 class ProductoTests(TestCase):
     def test_reference_must_be_unique_after_normalization(self):
@@ -191,6 +237,69 @@ class LineaPedidoTests(TestCase):
         self.assertEqual(linea.cantidad, 2)
         self.assertEqual(linea.precio_unitario, Decimal("3.50"))
         self.assertEqual(self.pedido.lineas.count(), 2)
+
+    def test_admin_inline_copies_product_price_when_price_is_blank(self):
+        producto_dos = Producto.objects.create(
+            referencia="prod-02",
+            nombre="Segundo producto",
+            precio_compra="3.50",
+        )
+        form = LineaPedidoInlineForm(
+            data={
+                "producto": producto_dos.pk,
+                "cantidad": "2",
+                "precio_unitario": "",
+            },
+            instance=LineaPedido(pedido=self.pedido),
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        linea = form.save()
+
+        self.assertEqual(linea.precio_unitario, Decimal("3.50"))
+
+    def test_admin_inline_product_options_include_purchase_price(self):
+        form = LineaPedidoInlineForm(instance=LineaPedido(pedido=self.pedido))
+
+        option_html = form.fields["producto"].widget.render(
+            "producto",
+            self.producto.pk,
+        )
+
+        self.assertIn('data-precio-compra="10.00"', str(option_html))
+        self.assertEqual(
+            form.fields["producto"].widget.template_name,
+            "unfold/widgets/select.html",
+        )
+        self.assertIn(
+            "appearance-none",
+            form.fields["producto"].widget.attrs["class"],
+        )
+
+    def test_admin_inline_hides_inactive_products_for_new_lines(self):
+        producto_inactivo = Producto.objects.create(
+            referencia="prod-inactivo",
+            nombre="Producto inactivo",
+            precio_compra="7.00",
+            activo=False,
+        )
+        form = LineaPedidoInlineForm(instance=LineaPedido(pedido=self.pedido))
+
+        self.assertQuerySetEqual(
+            form.fields["producto"].queryset,
+            [self.producto],
+        )
+        self.assertNotIn(producto_inactivo, form.fields["producto"].queryset)
+
+    def test_admin_inline_keeps_inactive_product_visible_on_existing_line(self):
+        self.producto.activo = False
+        self.producto.save()
+        form = LineaPedidoInlineForm(instance=self.linea)
+
+        self.assertQuerySetEqual(
+            form.fields["producto"].queryset,
+            [self.producto],
+        )
 
     def test_inactive_product_cannot_be_added_to_an_order(self):
         self.producto.activo = False
