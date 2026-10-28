@@ -1,11 +1,67 @@
 from decimal import Decimal
 from datetime import timedelta
+from unittest.mock import patch
 
+from django.contrib.admin.sites import AdminSite
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 
+from .admin import ProductoAdmin, ProveedorAdmin
 from .models import LineaPedido, PedidoCompra, Producto, Proveedor
+
+
+class AdminEstadoActivoTests(TestCase):
+    def setUp(self):
+        self.request = RequestFactory().post("/admin/")
+
+    def test_provider_admin_can_activate_and_deactivate_selected_providers(self):
+        proveedor = Proveedor.objects.create(
+            nombre="Proveedor de prueba",
+            cif_nif="B12345678",
+            email="proveedor@example.com",
+        )
+        proveedor_admin = ProveedorAdmin(Proveedor, AdminSite())
+
+        with patch.object(proveedor_admin, "message_user"):
+            proveedor_admin.desactivar_proveedores(
+                self.request,
+                Proveedor.objects.filter(pk=proveedor.pk),
+            )
+        proveedor.refresh_from_db()
+        self.assertFalse(proveedor.activo)
+
+        with patch.object(proveedor_admin, "message_user"):
+            proveedor_admin.activar_proveedores(
+                self.request,
+                Proveedor.objects.filter(pk=proveedor.pk),
+            )
+        proveedor.refresh_from_db()
+        self.assertTrue(proveedor.activo)
+
+    def test_product_admin_can_activate_and_deactivate_selected_products(self):
+        producto = Producto.objects.create(
+            referencia="prod-01",
+            nombre="Producto de prueba",
+            precio_compra="10.00",
+        )
+        producto_admin = ProductoAdmin(Producto, AdminSite())
+
+        with patch.object(producto_admin, "message_user"):
+            producto_admin.desactivar_productos(
+                self.request,
+                Producto.objects.filter(pk=producto.pk),
+            )
+        producto.refresh_from_db()
+        self.assertFalse(producto.activo)
+
+        with patch.object(producto_admin, "message_user"):
+            producto_admin.activar_productos(
+                self.request,
+                Producto.objects.filter(pk=producto.pk),
+            )
+        producto.refresh_from_db()
+        self.assertTrue(producto.activo)
 
 
 class ProveedorTests(TestCase):

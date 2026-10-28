@@ -8,17 +8,46 @@ from unfold.decorators import display
 
 # Register your models here.
 
+def actualizar_estado_activo(modeladmin, request, queryset, activo, entidad):
+    cantidad = queryset.update(activo=activo)
+    accion = "activaron" if activo else "desactivaron"
+    modeladmin.message_user(
+        request,
+        f"Se {accion} {cantidad} {entidad}(s).",
+        level=messages.SUCCESS,
+    )
+
 @admin.register(Proveedor)
 class ProveedorAdmin(ModelAdmin):
     list_display = ("nombre", "cif_nif", "email", "activo", "fecha_alta")
     search_fields = ("nombre", "cif_nif", "email")
     list_filter = ("activo",)
 
+    actions = ("activar_proveedores", "desactivar_proveedores")
+
+    @admin.action(description="Activar proveedores seleccionados")
+    def activar_proveedores(self, request, queryset):
+        actualizar_estado_activo(self, request, queryset, True, "proveedor")
+
+    @admin.action(description="Desactivar proveedores seleccionados")
+    def desactivar_proveedores(self, request, queryset):
+        actualizar_estado_activo(self, request, queryset, False, "proveedor")
+
 @admin.register(Producto)
 class ProductoAdmin(ModelAdmin):
     list_display = ("referencia", "nombre", "precio_compra", "activo")
     search_fields = ("referencia", "nombre")
     list_filter = ("activo",)
+    
+    actions = ("activar_productos", "desactivar_productos")
+
+    @admin.action(description="Activar productos seleccionados")
+    def activar_productos(self, request, queryset):
+        actualizar_estado_activo(self, request, queryset, True, "producto")
+
+    @admin.action(description="Desactivar productos seleccionados")
+    def desactivar_productos(self, request, queryset):
+        actualizar_estado_activo(self, request, queryset, False, "producto")
 
 class LineaPedidoInline(TabularInline):
     model = LineaPedido
