@@ -1,0 +1,26 @@
+{% extends "admin/base.html" %}
+
+{% block content %}
+<div style="padding: 1.5rem;">
+    <h1>{{ title }}</h1>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1.5rem 0;">
+        <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
+            <h2>Pedidos pendientes de recepción</h2>
+            <p style="font-size: 1.5rem;">{{ pedidos_pendientes }}</p>
+        </section>
+
+        <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
+            <h2>Pedidos recibidos</h2>
+            <p style="font-size: 1.5rem;">{{ pedidos_recibidos }}</p>
+        </section>
+
+        <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
+            <h2>Valor de pedidos confirmados</h2>
+            <p style="font-size: 1.5rem;">{{ valor_pedidos_confirmados|floatformat:2 }} €</p>
+        </section>
+    </div>
+
+    {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
+</div>
+{% endblock %}
