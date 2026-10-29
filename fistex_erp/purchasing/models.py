@@ -109,11 +109,6 @@ class Producto(models.Model):
             )
 
     def save(self, *args, **kwargs):
-        self.referencia = normalizar_referencia(self.referencia)
-        if not self.referencia:
-            raise ValidationError(
-                {"referencia": "La referencia no puede quedar vacía tras normalizarla."}
-            )
         self.full_clean()
         super().save(*args, **kwargs)
 
