@@ -6,7 +6,7 @@ from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
@@ -105,6 +105,36 @@ class PedidoCompraAdminFormTests(TestCase):
 
         self.assertTrue(form.fields["total"].disabled)
         self.assertEqual(form["total"].value(), 0)
+
+
+class PedidoCompraAdminListTests(TestCase):
+    def test_order_totals_are_annotated_without_extra_queries(self):
+        proveedor = Proveedor.objects.create(
+            nombre="Proveedor de prueba",
+            cif_nif="B12345678",
+            email="proveedor@example.com",
+        )
+        producto = Producto.objects.create(
+            referencia="prod-01",
+            nombre="Producto de prueba",
+            precio_compra="10.00",
+        )
+        pedido_con_lineas = PedidoCompra.objects.create(proveedor=proveedor)
+        LineaPedido.objects.create(
+            pedido=pedido_con_lineas,
+            producto=producto,
+            cantidad=3,
+            precio_unitario="12.50",
+        )
+        PedidoCompra.objects.create(proveedor=proveedor)
+        pedido_admin = PedidoCompraAdmin(PedidoCompra, AdminSite())
+        request = RequestFactory().get("/admin/")
+
+        with self.assertNumQueries(1):
+            pedidos = list(pedido_admin.get_queryset(request).order_by("pk"))
+            totales = [pedido_admin.total_en_lista(pedido) for pedido in pedidos]
+
+        self.assertEqual(totales, [Decimal("37.50"), Decimal("0.00")])
 
 
 class AdminActionPermissionTests(TestCase):
@@ -211,8 +241,9 @@ class AdminActionPermissionTests(TestCase):
         for modelo, accion, objeto, campo, valor_inicial in acciones:
             with self.subTest(accion=accion):
                 if campo == "estado":
-                    type(objeto).objects.filter(pk=objeto.pk).update(
-                        estado=valor_inicial
+                    models.QuerySet.update(
+                        type(objeto).objects.filter(pk=objeto.pk),
+                        estado=valor_inicial,
                     )
                 else:
                     type(objeto).objects.filter(pk=objeto.pk).update(
@@ -325,7 +356,10 @@ class AdminActionPermissionTests(TestCase):
             PedidoCompra.Estado.CANCELADO,
         ):
             with self.subTest(estado=estado):
-                PedidoCompra.objects.filter(pk=self.pedido.pk).update(estado=estado)
+                models.QuerySet.update(
+                    PedidoCompra.objects.filter(pk=self.pedido.pk),
+                    estado=estado,
+                )
 
                 response = self.client.get(url)
                 self.assertEqual(response.status_code, 200)
@@ -373,7 +407,10 @@ class AdminActionPermissionTests(TestCase):
             PedidoCompra.Estado.CANCELADO,
         ):
             with self.subTest(estado=estado):
-                PedidoCompra.objects.filter(pk=self.pedido.pk).update(estado=estado)
+                models.QuerySet.update(
+                    PedidoCompra.objects.filter(pk=self.pedido.pk),
+                    estado=estado,
+                )
                 self.pedido.refresh_from_db()
 
                 self.assertFalse(
@@ -480,8 +517,9 @@ class ProveedorTests(TestCase):
         pedido = PedidoCompra.objects.create(
             proveedor=proveedor_activo,
         )
-        PedidoCompra.objects.filter(pk=pedido.pk).update(
-            proveedor=proveedor_inactivo
+        models.QuerySet.update(
+            PedidoCompra.objects.filter(pk=pedido.pk),
+            proveedor=proveedor_inactivo,
         )
         pedido.refresh_from_db()
         form = PedidoCompraAdminForm(instance=pedido)
@@ -545,6 +583,31 @@ class LineaPedidoTests(TestCase):
 
         with self.assertRaises(ValidationError):
             self.linea.delete()
+
+        with self.assertRaises(ValidationError):
+            LineaPedido.objects.filter(pk=self.linea.pk).delete()
+
+    def test_line_cannot_be_moved_out_of_a_confirmed_order(self):
+        pedido_borrador = PedidoCompra.objects.create(proveedor=self.proveedor)
+        self.pedido.confirmar()
+        self.linea.pedido = pedido_borrador
+
+        with self.assertRaises(ValidationError):
+            self.linea.save()
+
+        self.assertEqual(
+            LineaPedido.objects.get(pk=self.linea.pk).pedido_id,
+            self.pedido.pk,
+        )
+
+    def test_queryset_update_cannot_bypass_line_guards(self):
+        with self.assertRaises(ValidationError):
+            LineaPedido.objects.filter(pk=self.linea.pk).update(cantidad=2)
+
+        self.assertEqual(
+            LineaPedido.objects.get(pk=self.linea.pk).cantidad,
+            1,
+        )
 
     def test_line_can_be_changed_while_order_is_draft(self):
         self.linea.cantidad = 2
@@ -757,6 +820,24 @@ class LineaPedidoTests(TestCase):
         self.pedido.refresh_from_db()
         self.assertEqual(self.pedido.estado, PedidoCompra.Estado.BORRADOR)
 
+    def test_queryset_update_cannot_bypass_order_state_transitions(self):
+        with self.assertRaises(ValidationError):
+            PedidoCompra.objects.filter(pk=self.pedido.pk).update(
+                estado=PedidoCompra.Estado.CONFIRMADO
+            )
+
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.estado, PedidoCompra.Estado.BORRADOR)
+
+    def test_order_bulk_create_cannot_bypass_initial_state_validation(self):
+        pedido = PedidoCompra(
+            proveedor=self.proveedor,
+            estado=PedidoCompra.Estado.RECIBIDO,
+        )
+
+        with self.assertRaises(ValidationError):
+            PedidoCompra.objects.bulk_create([pedido])
+
     def test_ordinary_save_ignores_an_unsaved_state_change(self):
         fecha_original = self.pedido.fecha
         self.pedido.estado = PedidoCompra.Estado.CONFIRMADO
@@ -779,8 +860,9 @@ class LineaPedidoTests(TestCase):
 
     def test_database_rejects_unknown_order_states(self):
         with self.assertRaises(IntegrityError), transaction.atomic():
-            PedidoCompra.objects.filter(pk=self.pedido.pk).update(
-                estado="pendiente"
+            models.QuerySet.update(
+                PedidoCompra.objects.filter(pk=self.pedido.pk),
+                estado="pendiente",
             )
 
     def test_canceled_order_cannot_be_received(self):

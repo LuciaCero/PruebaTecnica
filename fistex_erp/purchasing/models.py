@@ -112,6 +112,21 @@ class PedidoCompraQuerySet(models.QuerySet):
     def validar_borrado(self):
         _validar_borrado_pedidos(self)
 
+    def update(self, **kwargs):
+        raise ValidationError(
+            "Los pedidos deben modificarse mediante save() o una transición."
+        )
+
+    def bulk_create(self, objs, **kwargs):
+        raise ValidationError(
+            "Los pedidos deben crearse mediante save() para validar su estado."
+        )
+
+    def bulk_update(self, objs, fields, **kwargs):
+        raise ValidationError(
+            "Los pedidos deben modificarse mediante save() o una transición."
+        )
+
     def delete(self):
         with transaction.atomic():
             pedidos = list(self.select_for_update().order_by("pk"))
@@ -219,14 +234,14 @@ class PedidoCompra(models.Model):
                 proveedor_se_guarda
                 and proveedor_cambia
                 and self.proveedor_id
-                and not Proveedor.objects.filter(
-                    pk=self.proveedor_id,
-                    activo=True,
-                ).exists()
             ):
-                raise ValidationError(
-                    {"proveedor": "No se puede asignar un proveedor inactivo a un pedido."}
-                )
+                proveedor = Proveedor.objects.select_for_update().filter(
+                    pk=self.proveedor_id,
+                ).first()
+                if proveedor is None or not proveedor.activo:
+                    raise ValidationError(
+                        {"proveedor": "No se puede asignar un proveedor inactivo a un pedido."}
+                    )
 
             super().save(*args, **kwargs)
             if not self.numero:
@@ -261,10 +276,11 @@ class PedidoCompra(models.Model):
                     f"No se puede pasar un pedido de '{pedido_actual.estado}' a '{nuevo}'."
                 )
             pedido_actual._validar_precondiciones_transicion(nuevo)
-            actualizado = type(self).objects.filter(
+            queryset = type(self).objects.filter(
                 pk=pedido_actual.pk,
                 estado=pedido_actual.estado,
-            ).update(estado=nuevo)
+            )
+            actualizado = models.QuerySet.update(queryset, estado=nuevo)
             if actualizado != 1:
                 raise ValidationError(
                     "El estado del pedido cambió durante la transición."
@@ -278,11 +294,26 @@ class PedidoCompra(models.Model):
             raise ValidationError(
                 "No se puede confirmar un pedido que no tiene ninguna linea"
             )
-        if not Proveedor.objects.filter(pk=self.proveedor_id, activo=True).exists():
+        proveedor = Proveedor.objects.select_for_update().filter(
+            pk=self.proveedor_id,
+        ).first()
+        if proveedor is None or not proveedor.activo:
             raise ValidationError(
                 "No se puede confirmar un pedido de un proveedor inactivo"
             )
-        if self.lineas.filter(producto__activo=False).exists():
+        productos_ids = list(
+            self.lineas.values_list("producto_id", flat=True).distinct()
+        )
+        productos = list(
+            Producto.objects.select_for_update()
+            .filter(pk__in=productos_ids)
+            .order_by("pk")
+        )
+        if len(productos) != len(productos_ids):
+            raise ValidationError(
+                "No se puede confirmar un pedido con productos que ya no existen."
+            )
+        if any(not producto.activo for producto in productos):
             raise ValidationError(
                 "No se puede confirmar un pedido con productos inactivos."
             )
@@ -305,12 +336,19 @@ class PedidoCompra(models.Model):
         with transaction.atomic():
             pedido = type(self).objects.select_for_update().get(pk=self.pk)
             pedido.validar_pedido_editable()
+            producto_actual = Producto.objects.select_for_update().filter(
+                pk=producto.pk,
+            ).first()
+            if producto_actual is None or not producto_actual.activo:
+                raise ValidationError(
+                    {"producto": "No se puede añadir un producto inactivo a un pedido."}
+                )
             linea, creada = LineaPedido.objects.get_or_create(
                 pedido=pedido,
-                producto=producto,
+                producto=producto_actual,
                 defaults={
                     "cantidad": cantidad,
-                    "precio_unitario": Decimal(str(producto.precio_compra)),
+                    "precio_unitario": Decimal(str(producto_actual.precio_compra)),
                 },
             )
             if not creada:
@@ -343,7 +381,61 @@ class PedidoCompra(models.Model):
 # Línea de pedido
 # ==========================================
 
+class LineaPedidoQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError(
+            "Las líneas deben modificarse mediante save() para validar el pedido."
+        )
+
+    def bulk_create(self, objs, **kwargs):
+        raise ValidationError(
+            "Las líneas deben crearse mediante save() para validar el pedido."
+        )
+
+    def bulk_update(self, objs, fields, **kwargs):
+        raise ValidationError(
+            "Las líneas deben modificarse mediante save() para validar el pedido."
+        )
+
+    def delete(self):
+        with transaction.atomic():
+            filas_iniciales = dict(self.values_list("pk", "pedido_id"))
+            if not filas_iniciales:
+                return 0, {}
+
+            pedidos_ids = set(filas_iniciales.values())
+            pedidos = list(
+                PedidoCompra.objects.select_for_update()
+                .filter(pk__in=pedidos_ids)
+                .order_by("pk")
+            )
+            pedidos_por_id = {pedido.pk: pedido for pedido in pedidos}
+            if len(pedidos_por_id) != len(pedidos_ids):
+                raise ValidationError("El pedido asociado a una línea no existe.")
+
+            filas_actuales = dict(
+                LineaPedido.objects.filter(pk__in=filas_iniciales)
+                .values_list("pk", "pedido_id")
+            )
+            if any(
+                filas_actuales.get(linea_id) != pedido_id
+                for linea_id, pedido_id in filas_iniciales.items()
+                if linea_id in filas_actuales
+            ):
+                raise ValidationError(
+                    "Una línea cambió mientras se estaba eliminando. Inténtalo de nuevo."
+                )
+
+            for pedido in pedidos:
+                pedido.validar_pedido_editable()
+
+            seleccion = self.filter(pk__in=filas_iniciales)
+            return models.QuerySet.delete(seleccion)
+
+
 class LineaPedido(models.Model):
+    objects = LineaPedidoQuerySet.as_manager()
+
     pedido = models.ForeignKey(
         PedidoCompra,
         on_delete=models.CASCADE,   # Las líneas no tienen sentido sin su pedido
@@ -424,19 +516,79 @@ class LineaPedido(models.Model):
             )
 
     def save(self, *args, **kwargs):
-        self.validar_pedido_editable()
-        if self.producto_id and not Producto.objects.filter(
-            pk=self.producto_id,
-            activo=True,
-        ).exists():
-            raise ValidationError(
-                {"producto": "No se puede añadir un producto inactivo a un pedido."}
+        with transaction.atomic():
+            pedido_original_id = None
+            if self.pk is not None:
+                pedido_original_id = (
+                    type(self).objects.filter(pk=self.pk)
+                    .values_list("pedido_id", flat=True)
+                    .first()
+                )
+
+            pedidos_ids = {
+                pedido_id
+                for pedido_id in (pedido_original_id, self.pedido_id)
+                if pedido_id is not None
+            }
+            pedidos = list(
+                PedidoCompra.objects.select_for_update()
+                .filter(pk__in=pedidos_ids)
+                .order_by("pk")
             )
-        super().save(*args, **kwargs)
+            pedidos_por_id = {pedido.pk: pedido for pedido in pedidos}
+
+            if len(pedidos_por_id) != len(pedidos_ids):
+                raise ValidationError("El pedido asociado a la línea no existe.")
+
+            if self.pk is not None:
+                pedido_actual_id = (
+                    type(self).objects.filter(pk=self.pk)
+                    .values_list("pedido_id", flat=True)
+                    .first()
+                )
+                if pedido_actual_id != pedido_original_id:
+                    raise ValidationError(
+                        "La línea cambió mientras se estaba guardando. Inténtalo de nuevo."
+                    )
+
+            for pedido in pedidos:
+                pedido.validar_pedido_editable()
+
+            if self.producto_id:
+                producto = Producto.objects.select_for_update().filter(
+                    pk=self.producto_id,
+                ).first()
+                if producto is None or not producto.activo:
+                    raise ValidationError(
+                        {"producto": "No se puede añadir un producto inactivo a un pedido."}
+                    )
+            super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        self.validar_pedido_editable()
-        return super().delete(*args, **kwargs)
+        with transaction.atomic():
+            pedido_id = self.pedido_id
+            if self.pk is not None:
+                pedido_id = (
+                    type(self).objects.filter(pk=self.pk)
+                    .values_list("pedido_id", flat=True)
+                    .first()
+                )
+
+            if pedido_id is not None:
+                pedido = PedidoCompra.objects.select_for_update().get(pk=pedido_id)
+                if self.pk is not None:
+                    pedido_actual_id = (
+                        type(self).objects.filter(pk=self.pk)
+                        .values_list("pedido_id", flat=True)
+                        .first()
+                    )
+                    if pedido_actual_id != pedido_id:
+                        raise ValidationError(
+                            "La línea cambió mientras se estaba eliminando. Inténtalo de nuevo."
+                        )
+                pedido.validar_pedido_editable()
+
+            return super().delete(*args, **kwargs)
  
     @property
     def subtotal(self) -> Decimal:
