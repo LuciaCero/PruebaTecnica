@@ -1,14 +1,16 @@
+from decimal import Decimal
+
 from django.contrib import admin
 from django.contrib.admin.actions import delete_selected as delete_selected_action
 from django import forms
 from django.contrib import messages
 from django.core.exceptions import ValidationError
-from django.db.models import Q
+from django.db.models import DecimalField, F, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from django.http import HttpResponseRedirect
 from django.urls import reverse
 from unfold.admin import ModelAdmin, TabularInline
 from .models import Proveedor, PedidoCompra, Producto, LineaPedido
-from django.db.models import DecimalField, F, Sum
 from unfold.decorators import display
 from unfold.widgets import UnfoldAdminSelectWidget
 
@@ -179,9 +181,33 @@ class PedidoCompraAdmin(ModelAdmin):
     form = PedidoCompraAdminForm
 
     # Columnas y filtros
-    list_display = ("numero", "proveedor", "fecha", "estado_con_etiqueta", "total")
+    list_display = (
+        "numero",
+        "proveedor",
+        "fecha",
+        "estado_con_etiqueta",
+        "total_en_lista",
+    )
     search_fields = ("numero", "proveedor__nombre", "proveedor__cif_nif")
     list_filter = ("estado", "fecha", "proveedor")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(
+            total_calculado=Coalesce(
+                Sum(
+                    F("lineas__cantidad") * F("lineas__precio_unitario"),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+                Value(
+                    Decimal("0.00"),
+                    output_field=DecimalField(max_digits=14, decimal_places=2),
+                ),
+            )
+        )
+
+    @admin.display(description="Total", ordering="total_calculado")
+    def total_en_lista(self, obj):
+        return obj.total_calculado
 
     def get_readonly_fields(self, request, obj=None):
         readonly_fields = list(super().get_readonly_fields(request, obj))
