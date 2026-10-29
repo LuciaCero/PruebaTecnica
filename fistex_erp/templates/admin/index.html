@@ -47,13 +47,13 @@
                             <a href="{% url 'admin:purchasing_pedidocompra_change' pedido.pk %}">
                                 {{ pedido.numero }}
                             </a>
-                            <div>{{ pedido.proveedor }} · {{ pedido.fecha|date:"d/m/Y" }}</div>
+                            <div style="color: gray;">{{ pedido.proveedor }} · {{ pedido.fecha|date:"d/m/Y" }}</div>
                             <strong>{{ pedido.total_calculado|floatformat:2 }} €</strong>
                         </li>
                     {% endfor %}
                 </ul>
             {% else %}
-                <p>No hay pedidos pendientes de recepción.</p>
+                <p style="color: gray; font-style: italic;">No hay pedidos pendientes de recepción.</p>
             {% endif %}
             <a href="{% url 'admin:purchasing_pedidocompra_changelist' %}?estado__exact=confirmado">
                 Ver pedidos

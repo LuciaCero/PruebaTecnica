@@ -7,6 +7,7 @@ from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import DecimalField, F, Q, Sum, Value
+from django.forms.models import BaseInlineFormSet
 from django.db.models.functions import Coalesce
 from django.http import HttpResponseRedirect
 from django.urls import reverse
@@ -120,6 +121,8 @@ class LineaPedidoInlineForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        if not self.instance.pk and self.initial.get("cantidad") is None:
+            self.initial["cantidad"] = 1
         if "producto" in self.fields:
             productos = Producto.objects.filter(activo=True)
             if self.instance.pk and not self.instance.producto.activo:
@@ -164,9 +167,22 @@ class PedidoCompraAdminForm(forms.ModelForm):
             self.fields["proveedor"].queryset = proveedores
 
 
+class LineaPedidoInlineFormSet(BaseInlineFormSet):
+    def get_unique_error_message(self, unique_check):
+        return (
+            "Este producto ya está incluido en el pedido. Cambie la cantidad en la línea existente en lugar de añadir otra línea."
+        )
+
+    def get_form_error(self):
+        return (
+            "Hay productos duplicados. Cada producto debe aparecer una sola vez. Modifique la cantidad en la línea existente."
+        )
+
+
 class LineaPedidoInline(TabularInline):
     model = LineaPedido
     form = LineaPedidoInlineForm
+    formset = LineaPedidoInlineFormSet
     extra = 1
     fields = ("producto", "cantidad", "precio_unitario")
 

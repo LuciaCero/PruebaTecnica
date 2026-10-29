@@ -1,10 +1,10 @@
 # FistexPruebaTecnica
 
-ERP interno para gestionar proveedores, productos y pedidos de compra con Django, Unfold y PostgreSQL.
+ERP interno de compras para gestionar proveedores, productos y pedidos. Usa Django, Unfold y PostgreSQL.
 
-## Inicio rápido (PowerShell)
+## Instalación
 
-Desde la raíz del repositorio, con Docker Desktop en ejecución:
+Necesitas Docker Desktop en ejecución. Desde la raíz del proyecto, en PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
@@ -12,27 +12,24 @@ docker compose up --build -d
 docker compose exec web python manage.py createsuperuser
 ```
 
-Abre <http://localhost:8000/admin/> e inicia sesión con el usuario creado. Las migraciones se aplican al arrancar.
+Docker inicia PostgreSQL, aplica las migraciones y arranca Django. También se cargan algunos datos de ejemplo. Después, entra en <http://localhost:8000/admin/> con el usuario que acabas de crear.
 
 ## Comandos útiles
 
 ```powershell
-# Ver estado y logs
+# Ver contenedores y logs
 docker compose ps
 docker compose logs -f web
 
-# Ejecutar pruebas en PostgreSQL
+# Ejecutar pruebas
 docker compose exec web python manage.py test purchasing
 
-# Aplicar migraciones o crear migraciones
+# Aplicar o crear migraciones
 docker compose exec web python manage.py migrate
 docker compose exec web python manage.py makemigrations
 
-# Parar servicios (conserva los datos)
+# Parar (conserva los datos)
 docker compose down
-
-# Parar y borrar también los datos de PostgreSQL
-docker compose down -v
 ```
 
-Configura las variables de entorno en `.env` antes de iniciar si necesitas cambiar los valores de `.env.example`.
+Los valores de `.env.example` son para uso local. Puedes cambiarlos en `.env` antes de iniciar el proyecto.

@@ -31,6 +31,15 @@ document.addEventListener("change", (event) => {
         productoSelect instanceof HTMLSelectElement &&
         productoSelect.name.endsWith("-producto")
     ) {
+        const cantidadInput = document.getElementById(
+            productoSelect.id.replace(/-producto$/, "-cantidad"),
+        );
+        if (cantidadInput instanceof HTMLInputElement) {
+            cantidadInput.value = "1";
+            cantidadInput.dispatchEvent(new Event("input", { bubbles: true }));
+            cantidadInput.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+
         const precioInput = document.getElementById(
             productoSelect.id.replace(/-producto$/, "-precio_unitario"),
         );
