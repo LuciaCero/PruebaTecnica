@@ -11,7 +11,9 @@ from django.test import RequestFactory, TestCase
 from django.urls import reverse
 
 from .admin import (
+    LineaPedidoInline,
     LineaPedidoInlineForm,
+    PedidoCompraAdmin,
     PedidoCompraAdminForm,
     ProductoAdmin,
     ProveedorAdmin,
@@ -254,6 +256,92 @@ class AdminActionPermissionTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.producto.refresh_from_db()
         self.assertFalse(self.producto.activo)
+
+    def test_non_draft_orders_are_read_only_in_admin(self):
+        usuario = self.crear_usuario(
+            "editor_pedidos",
+            [
+                ("change", "pedidocompra"),
+                ("change", "lineapedido"),
+            ],
+        )
+        self.client.force_login(usuario)
+        url = reverse(
+            "admin:purchasing_pedidocompra_change",
+            args=[self.pedido.pk],
+        )
+
+        for estado in (
+            PedidoCompra.Estado.CONFIRMADO,
+            PedidoCompra.Estado.RECIBIDO,
+            PedidoCompra.Estado.CANCELADO,
+        ):
+            with self.subTest(estado=estado):
+                PedidoCompra.objects.filter(pk=self.pedido.pk).update(estado=estado)
+
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(
+                    response,
+                    "Solo se pueden editar pedidos que estén en estado Borrador.",
+                )
+
+                response = self.client.post(
+                    url,
+                    {
+                        "proveedor": str(self.proveedor.pk),
+                        "fecha": "2030-01-01",
+                        "_save": "Guardar",
+                    },
+                )
+                self.assertEqual(response.status_code, 403)
+
+                self.pedido.refresh_from_db()
+                self.assertEqual(self.pedido.estado, estado)
+
+    def test_order_and_lines_can_only_be_edited_while_draft(self):
+        request = RequestFactory().get("/admin/")
+        usuario = self.crear_usuario(
+            "editor_hooks",
+            [
+                ("change", "pedidocompra"),
+                ("delete", "pedidocompra"),
+                ("add", "lineapedido"),
+                ("change", "lineapedido"),
+                ("delete", "lineapedido"),
+            ],
+        )
+        request.user = usuario
+        pedido_admin = PedidoCompraAdmin(PedidoCompra, AdminSite())
+        linea_inline = LineaPedidoInline(PedidoCompra, AdminSite())
+
+        self.assertTrue(pedido_admin.has_change_permission(request, self.pedido))
+        self.assertTrue(linea_inline.has_add_permission(request, self.pedido))
+        self.assertTrue(linea_inline.has_delete_permission(request, self.pedido))
+
+        for estado in (
+            PedidoCompra.Estado.CONFIRMADO,
+            PedidoCompra.Estado.RECIBIDO,
+            PedidoCompra.Estado.CANCELADO,
+        ):
+            with self.subTest(estado=estado):
+                PedidoCompra.objects.filter(pk=self.pedido.pk).update(estado=estado)
+                self.pedido.refresh_from_db()
+
+                self.assertFalse(
+                    pedido_admin.has_change_permission(request, self.pedido)
+                )
+                self.assertFalse(
+                    pedido_admin.has_delete_permission(request, self.pedido)
+                )
+                self.assertEqual(
+                    set(linea_inline.get_readonly_fields(request, self.pedido)),
+                    set(linea_inline.fields),
+                )
+                self.assertFalse(linea_inline.has_add_permission(request, self.pedido))
+                self.assertFalse(
+                    linea_inline.has_delete_permission(request, self.pedido)
+                )
 
     def test_user_without_model_permissions_cannot_access_or_run_actions(self):
         usuario = self.crear_usuario("sin_permisos")

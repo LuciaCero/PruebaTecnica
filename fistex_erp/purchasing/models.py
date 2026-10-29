@@ -21,7 +21,7 @@ class Proveedor(models.Model):
         unique=True,
         help_text="Máximo 9 caracteres.",
     )
-    email = models.EmailField("email")
+    email = models.EmailField("correo electrónico")
     activo = models.BooleanField("activo", default=True)
     fecha_alta = models.DateTimeField("fecha de alta", auto_now_add=True)
 

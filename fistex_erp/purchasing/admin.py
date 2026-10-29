@@ -147,8 +147,27 @@ class LineaPedidoInline(TabularInline):
     form = LineaPedidoInlineForm
     extra = 1
     fields = ("producto", "cantidad", "precio_unitario")
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj and obj.estado != PedidoCompra.Estado.BORRADOR:
+            return self.fields
+        return super().get_readonly_fields(request, obj)
+
+    def has_add_permission(self, request, obj=None):
+        return (
+            super().has_add_permission(request, obj)
+            and (obj is None or obj.estado == PedidoCompra.Estado.BORRADOR)
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return (
+            super().has_delete_permission(request, obj)
+            and (obj is None or obj.estado == PedidoCompra.Estado.BORRADOR)
+        )
+
     class Media:
         js = ("purchasing/admin_pedido.js",)
+
 
 @admin.register(PedidoCompra)
 class PedidoCompraAdmin(ModelAdmin):
@@ -160,6 +179,29 @@ class PedidoCompraAdmin(ModelAdmin):
     list_display = ("numero", "proveedor", "fecha", "estado_con_etiqueta", "total")
     search_fields = ("numero", "proveedor__nombre", "proveedor__cif_nif")
     list_filter = ("estado", "fecha", "proveedor")
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly_fields = list(super().get_readonly_fields(request, obj))
+        if obj and obj.estado != PedidoCompra.Estado.BORRADOR:
+            readonly_fields.extend(("proveedor", "fecha", "estado"))
+            readonly_fields.append("aviso_solo_lectura")
+        return tuple(readonly_fields)
+
+    def has_change_permission(self, request, obj=None):
+        return (
+            super().has_change_permission(request, obj)
+            and (obj is None or obj.estado == PedidoCompra.Estado.BORRADOR)
+        )
+
+    def has_delete_permission(self, request, obj=None):
+        return (
+            super().has_delete_permission(request, obj)
+            and (obj is None or obj.estado == PedidoCompra.Estado.BORRADOR)
+        )
+
+    @admin.display(description="Aviso")
+    def aviso_solo_lectura(self, obj):
+        return "Solo se pueden editar pedidos que estén en estado Borrador."
 
     @display(
         description="Estado",
