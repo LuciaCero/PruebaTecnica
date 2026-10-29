@@ -4,20 +4,60 @@
 <div style="padding: 1.5rem;">
     <h1>{{ title }}</h1>
 
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1.5rem 0;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1.5rem 0 1rem;">
         <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
             <h2>Pedidos pendientes de recepción</h2>
             <p style="font-size: 1.5rem;">{{ pedidos_pendientes }}</p>
         </section>
 
         <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
-            <h2>Pedidos recibidos</h2>
-            <p style="font-size: 1.5rem;">{{ pedidos_recibidos }}</p>
+            <h2>Borradores</h2>
+            <p style="font-size: 1.5rem;">
+                <a href="{% url 'admin:purchasing_pedidocompra_changelist' %}?estado__exact=borrador">
+                    {{ pedidos_borrador }}
+                </a>
+            </p>
         </section>
 
         <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
-            <h2>Valor de pedidos confirmados</h2>
-            <p style="font-size: 1.5rem;">{{ valor_pedidos_confirmados|floatformat:2 }} €</p>
+            <h2>Pedidos recibidos</h2>
+            <p style="font-size: 1.5rem;">{{ pedidos_recibidos }}</p>
+        </section>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin: 0 0 1.5rem;">
+        <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
+            <h2>Valor pendiente de recepción</h2>
+            <p style="font-size: 1.5rem;">{{ valor_pedidos_pendientes|floatformat:2 }} €</p>
+        </section>
+
+        <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
+            <h2>Valor de pedidos recibidos</h2>
+            <p style="font-size: 1.5rem;">{{ valor_pedidos_recibidos|floatformat:2 }} €</p>
+        </section>
+    </div>
+
+    <div style="display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; margin: 1.5rem 0;">
+        <section style="border: 1px solid #ddd; border-radius: 8px; padding: 1rem;">
+            <h2>Pedidos pendientes de recepción</h2>
+            {% if lista_pedidos_pendientes %}
+                <ul style="list-style: none; margin: 0; padding: 0;">
+                    {% for pedido in lista_pedidos_pendientes %}
+                        <li style="border-top: 1px solid #eee; padding: 0.75rem 0;">
+                            <a href="{% url 'admin:purchasing_pedidocompra_change' pedido.pk %}">
+                                {{ pedido.numero }}
+                            </a>
+                            <div>{{ pedido.proveedor }} · {{ pedido.fecha|date:"d/m/Y" }}</div>
+                            <strong>{{ pedido.total_calculado|floatformat:2 }} €</strong>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p>No hay pedidos pendientes de recepción.</p>
+            {% endif %}
+            <a href="{% url 'admin:purchasing_pedidocompra_changelist' %}?estado__exact=confirmado">
+                Ver pedidos
+            </a>
         </section>
     </div>
 

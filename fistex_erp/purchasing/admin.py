@@ -326,19 +326,37 @@ def dashboard_callback(request, context):
     confirmados = PedidoCompra.objects.filter(
         estado=PedidoCompra.Estado.CONFIRMADO
     )
+    total_pedido = Coalesce(
+        Sum(
+            F("lineas__cantidad") * F("lineas__precio_unitario"),
+            output_field=DecimalField(max_digits=14, decimal_places=2),
+        ),
+        Value(
+            Decimal("0.00"),
+            output_field=DecimalField(max_digits=14, decimal_places=2),
+        ),
+    )
+    pedidos_pendientes_lista = confirmados.annotate(
+        total_calculado=total_pedido
+    )[:5]
+    recibidos = PedidoCompra.objects.filter(
+        estado=PedidoCompra.Estado.RECIBIDO
+    )
 
     context.update({
         "pedidos_pendientes": confirmados.count(),
-        "pedidos_recibidos": PedidoCompra.objects.filter(
-            estado=PedidoCompra.Estado.RECIBIDO
+        "lista_pedidos_pendientes": pedidos_pendientes_lista,
+        "pedidos_borrador": PedidoCompra.objects.filter(
+            estado=PedidoCompra.Estado.BORRADOR
         ).count(),
-        "valor_pedidos_confirmados": (
-            confirmados.aggregate(
-                total=Sum(
-                    F("lineas__cantidad") * F("lineas__precio_unitario"),
-                    output_field=DecimalField(max_digits=14, decimal_places=2),
-                )
-            )["total"] or 0
+        "pedidos_recibidos": recibidos.count(),
+        "valor_pedidos_pendientes": (
+            confirmados.aggregate(total=total_pedido)["total"]
+            or Decimal("0.00")
+        ),
+        "valor_pedidos_recibidos": (
+            recibidos.aggregate(total=total_pedido)["total"]
+            or Decimal("0.00")
         ),
     })
     return context
