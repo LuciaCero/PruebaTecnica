@@ -1,10 +1,22 @@
-# FistexPruebaTecnica
+# ERP interno de compras
 
-ERP interno de compras para gestionar proveedores, productos y pedidos. Usa Django, Unfold y PostgreSQL.
+Aplicación para gestionar proveedores, catálogo de productos y pedidos de compra. Está construida con Django, Django Unfold y PostgreSQL; el flujo principal se resuelve desde el panel de administración.
 
-## Instalación
+## Funcionalidades
 
-Necesitas Docker Desktop en ejecución. Desde la raíz del proyecto, en PowerShell:
+- Alta y gestión de proveedores y productos, con validación de CIF/NIF, referencias y precios.
+- Pedidos con varias líneas, número automático y total calculado mediante el ORM.
+- Flujo de estados `borrador → confirmado → recibido`, con cancelación y reglas de edición aplicadas en el servidor.
+- Panel con indicadores y pedidos pendientes de recepción.
+- Migraciones con datos de ejemplo para probar el panel desde el primer arranque.
+
+## Requisitos
+
+- Docker Desktop instalado y en ejecución.
+
+## Puesta en marcha
+
+Desde la raíz del repositorio, en PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
@@ -12,24 +24,32 @@ docker compose up --build -d
 docker compose exec web python manage.py createsuperuser
 ```
 
-Docker inicia PostgreSQL, aplica las migraciones y arranca Django. También se cargan algunos datos de ejemplo. Después, entra en <http://localhost:8000/admin/> con el usuario que acabas de crear.
+La aplicación aplica las migraciones y arranca junto con PostgreSQL. Abre <http://localhost:8000/admin/> e inicia sesión con el superusuario creado.
 
 ## Comandos útiles
 
 ```powershell
-# Ver contenedores y logs
+# Estado y logs
 docker compose ps
 docker compose logs -f web
 
-# Ejecutar pruebas
+# Pruebas y comprobaciones
 docker compose exec web python manage.py test purchasing
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations --check --dry-run
 
-# Aplicar o crear migraciones
+# Migraciones y parada (conserva los datos)
 docker compose exec web python manage.py migrate
-docker compose exec web python manage.py makemigrations
-
-# Parar (conserva los datos)
 docker compose down
 ```
 
-Los valores de `.env.example` son para uso local. Puedes cambiarlos en `.env` antes de iniciar el proyecto.
+## Estructura
+
+- `fistex_erp/purchasing/models.py`: modelos y reglas de negocio.
+- `fistex_erp/purchasing/admin.py`: administración, acciones e indicadores.
+- `fistex_erp/purchasing/migrations/`: esquema y datos iniciales.
+- `fistex_erp/purchasing/tests.py`: pruebas automatizadas.
+
+## Configuración
+
+Los valores de `.env.example` son únicamente para desarrollo local. Se pueden cambiar en `.env` antes de arrancar. Esta configuración usa `DEBUG=True`, credenciales de ejemplo y el servidor de desarrollo de Django; no debe utilizarse tal cual en producción.
