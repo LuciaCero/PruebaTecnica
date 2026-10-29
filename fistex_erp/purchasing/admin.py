@@ -5,6 +5,7 @@ from django.contrib.admin.actions import delete_selected as delete_selected_acti
 from django import forms
 from django.contrib import messages
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import HttpResponseRedirect
@@ -24,6 +25,22 @@ def actualizar_estado_activo(modeladmin, request, queryset, activo, entidad):
         f"Se {accion} {cantidad} {entidad}(s).",
         level=messages.SUCCESS,
     )
+
+
+def actualizar_estado_productos(modeladmin, request, queryset, activo):
+    with transaction.atomic():
+        productos = list(queryset.select_for_update().order_by("pk"))
+        for producto in productos:
+            producto.activo = activo
+            producto.save(update_fields=["activo"])
+
+    accion = "activaron" if activo else "desactivaron"
+    modeladmin.message_user(
+        request,
+        f"Se {accion} {len(productos)} producto(s).",
+        level=messages.SUCCESS,
+    )
+
 
 @admin.register(Proveedor)
 class ProveedorAdmin(ModelAdmin):
@@ -60,14 +77,14 @@ class ProductoAdmin(ModelAdmin):
         permissions=["change"],
     )
     def activar_productos(self, request, queryset):
-        actualizar_estado_activo(self, request, queryset, True, "producto")
+        actualizar_estado_productos(self, request, queryset, True)
 
     @admin.action(
         description="Desactivar productos seleccionados",
         permissions=["change"],
     )
     def desactivar_productos(self, request, queryset):
-        actualizar_estado_activo(self, request, queryset, False, "producto")
+        actualizar_estado_productos(self, request, queryset, False)
 
 class ProductoPrecioSelect(UnfoldAdminSelectWidget):
     def create_option(

@@ -245,6 +245,9 @@ class AdminActionPermissionTests(TestCase):
                         type(objeto).objects.filter(pk=objeto.pk),
                         estado=valor_inicial,
                     )
+                elif isinstance(objeto, Producto):
+                    objeto.activo = valor_inicial
+                    objeto.save(update_fields=["activo"])
                 else:
                     type(objeto).objects.filter(pk=objeto.pk).update(
                         activo=valor_inicial
@@ -538,20 +541,88 @@ class ProductoTests(TestCase):
             precio_compra="10.00",
         )
 
-        with self.assertRaises(IntegrityError), transaction.atomic():
+        with self.assertRaises(ValidationError):
             Producto.objects.create(
                 referencia=" PROD -01 ",
                 nombre="Producto duplicado",
                 precio_compra="12.00",
             )
 
+    def test_reference_cannot_be_empty_after_normalization(self):
+        for referencia in ("", " \t\n "):
+            with self.subTest(referencia=referencia):
+                producto = Producto(
+                    referencia=referencia,
+                    nombre="Producto sin referencia",
+                    precio_compra="10.00",
+                )
+                with self.assertRaises(ValidationError) as error:
+                    producto.save()
+
+                self.assertIn("referencia", error.exception.message_dict)
+                self.assertFalse(Producto.objects.exists())
+
     def test_purchase_price_cannot_be_negative(self):
-        with self.assertRaises(IntegrityError), transaction.atomic():
+        with self.assertRaises(ValidationError):
             Producto.objects.create(
                 referencia="prod-neg",
                 nombre="Producto con precio negativo",
                 precio_compra="-1.00",
             )
+
+    def test_product_save_validates_other_required_fields(self):
+        with self.assertRaises(ValidationError) as error:
+            Producto.objects.create(
+                referencia="prod-sin-nombre",
+                nombre="",
+                precio_compra="10.00",
+            )
+
+        self.assertIn("nombre", error.exception.message_dict)
+
+    def test_update_or_create_uses_product_validation(self):
+        producto = Producto.objects.create(
+            referencia="prod-01",
+            nombre="Producto de prueba",
+            precio_compra="10.00",
+        )
+
+        with self.assertRaises(ValidationError):
+            Producto.objects.update_or_create(
+                pk=producto.pk,
+                defaults={"precio_compra": "-1.00"},
+            )
+
+        producto.refresh_from_db()
+        self.assertEqual(producto.precio_compra, Decimal("10.00"))
+
+    def test_product_queryset_bulk_writes_are_rejected(self):
+        producto = Producto.objects.create(
+            referencia="prod-01",
+            nombre="Producto de prueba",
+            precio_compra="10.00",
+        )
+
+        with self.assertRaises(ValidationError):
+            Producto.objects.filter(pk=producto.pk).update(activo=False)
+
+        with self.assertRaises(ValidationError):
+            Producto.objects.bulk_create(
+                [
+                    Producto(
+                        referencia="prod-02",
+                        nombre="Segundo producto",
+                        precio_compra="12.00",
+                    )
+                ]
+            )
+
+        producto.activo = False
+        with self.assertRaises(ValidationError):
+            Producto.objects.bulk_update([producto], ["activo"])
+
+        producto.refresh_from_db()
+        self.assertTrue(producto.activo)
 
 
 class LineaPedidoTests(TestCase):

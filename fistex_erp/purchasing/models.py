@@ -48,10 +48,29 @@ class Proveedor(models.Model):
 
 def normalizar_referencia(valor: str) -> str:
     """Quita espacios y pasa a mayúsculas: ' ab 12 ' -> 'AB12'."""
-    return "".join(valor.split()).upper()
+    return "".join((valor or "").split()).upper()
+
+
+class ProductoQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError(
+            "Los productos deben modificarse mediante save() para validar sus campos."
+        )
+
+    def bulk_create(self, objs, **kwargs):
+        raise ValidationError(
+            "Los productos deben crearse mediante save() para validar sus campos."
+        )
+
+    def bulk_update(self, objs, fields, **kwargs):
+        raise ValidationError(
+            "Los productos deben modificarse mediante save() para validar sus campos."
+        )
 
 
 class Producto(models.Model):
+    objects = ProductoQuerySet.as_manager()
+
     referencia = models.CharField("referencia", max_length=200, unique=True)
     nombre = models.CharField("nombre comercial", max_length=200)
     precio_compra = models.DecimalField(
@@ -72,6 +91,10 @@ class Producto(models.Model):
                 condition=Q(precio_compra__gte=0),
                 name="producto_precio_compra_no_negativo",
             ),
+            models.CheckConstraint(
+                condition=~Q(referencia=""),
+                name="producto_referencia_no_vacia",
+            ),
         ]
 
     def __str__(self):
@@ -80,9 +103,18 @@ class Producto(models.Model):
     def clean(self):
         # Normaliza antes de validate_unique() para detectar duplicados por formato
         self.referencia = normalizar_referencia(self.referencia)
+        if not self.referencia:
+            raise ValidationError(
+                {"referencia": "La referencia no puede quedar vacía tras normalizarla."}
+            )
 
     def save(self, *args, **kwargs):
         self.referencia = normalizar_referencia(self.referencia)
+        if not self.referencia:
+            raise ValidationError(
+                {"referencia": "La referencia no puede quedar vacía tras normalizarla."}
+            )
+        self.full_clean()
         super().save(*args, **kwargs)
 
 
