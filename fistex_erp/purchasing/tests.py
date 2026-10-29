@@ -3,9 +3,12 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.admin.sites import AdminSite
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Permission
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import RequestFactory, TestCase
+from django.urls import reverse
 
 from .admin import (
     LineaPedidoInlineForm,
@@ -67,6 +70,208 @@ class AdminEstadoActivoTests(TestCase):
             )
         producto.refresh_from_db()
         self.assertTrue(producto.activo)
+
+
+class PedidoCompraAdminFormTests(TestCase):
+    def setUp(self):
+        self.proveedor = Proveedor.objects.create(
+            nombre="Proveedor de prueba",
+            cif_nif="B12345678",
+            email="proveedor@example.com",
+        )
+        self.producto = Producto.objects.create(
+            referencia="prod-01",
+            nombre="Producto de prueba",
+            precio_compra="10.00",
+        )
+        self.pedido = PedidoCompra.objects.create(proveedor=self.proveedor)
+        LineaPedido.objects.create(
+            pedido=self.pedido,
+            producto=self.producto,
+            cantidad=3,
+            precio_unitario="12.50",
+        )
+
+    def test_total_is_read_only_and_initialized_from_order_lines(self):
+        form = PedidoCompraAdminForm(instance=self.pedido)
+
+        self.assertTrue(form.fields["total"].disabled)
+        self.assertEqual(form["total"].value(), Decimal("37.50"))
+
+    def test_new_order_total_starts_at_zero(self):
+        form = PedidoCompraAdminForm()
+
+        self.assertTrue(form.fields["total"].disabled)
+        self.assertEqual(form["total"].value(), 0)
+
+
+class AdminActionPermissionTests(TestCase):
+    def setUp(self):
+        self.proveedor = Proveedor.objects.create(
+            nombre="Proveedor de prueba",
+            cif_nif="B12345678",
+            email="proveedor@example.com",
+        )
+        self.producto = Producto.objects.create(
+            referencia="prod-01",
+            nombre="Producto de prueba",
+            precio_compra="10.00",
+        )
+        self.pedido = PedidoCompra.objects.create(proveedor=self.proveedor)
+        LineaPedido.objects.create(
+            pedido=self.pedido,
+            producto=self.producto,
+            cantidad=1,
+            precio_unitario="10.00",
+        )
+
+    def crear_usuario(self, username, permisos=()):
+        usuario = get_user_model().objects.create_user(
+            username=username,
+            password="test-password",
+            is_staff=True,
+        )
+        permisos_modelo = [
+            Permission.objects.get(
+                content_type__app_label="purchasing",
+                codename=f"{accion}_{modelo}",
+            )
+            for accion, modelo in permisos
+        ]
+        usuario.user_permissions.set(permisos_modelo)
+        return usuario
+
+    def enviar_accion(self, modelo, accion, objeto_id):
+        return self.client.post(
+            reverse(f"admin:purchasing_{modelo}_changelist"),
+            {
+                "action": accion,
+                "index": "0",
+                "select_across": "0",
+                "_selected_action": [str(objeto_id)],
+            },
+        )
+
+    def test_read_only_user_can_view_but_cannot_run_write_actions(self):
+        usuario = self.crear_usuario(
+            "lector",
+            [
+                ("view", "proveedor"),
+                ("view", "producto"),
+                ("view", "pedidocompra"),
+                ("view", "lineapedido"),
+            ],
+        )
+        self.client.force_login(usuario)
+
+        for modelo in ("proveedor", "producto", "pedidocompra"):
+            with self.subTest(modelo=modelo):
+                response = self.client.get(
+                    reverse(f"admin:purchasing_{modelo}_changelist")
+                )
+                self.assertEqual(response.status_code, 200)
+
+        response = self.client.get(
+            reverse(
+                "admin:purchasing_pedidocompra_change",
+                args=[self.pedido.pk],
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+
+        acciones = (
+            ("proveedor", "activar_proveedores", self.proveedor, "activo", False),
+            ("proveedor", "desactivar_proveedores", self.proveedor, "activo", True),
+            ("producto", "activar_productos", self.producto, "activo", False),
+            ("producto", "desactivar_productos", self.producto, "activo", True),
+            (
+                "pedidocompra",
+                "confirmar_pedidos",
+                self.pedido,
+                "estado",
+                PedidoCompra.Estado.BORRADOR,
+            ),
+            (
+                "pedidocompra",
+                "recibir_pedidos",
+                self.pedido,
+                "estado",
+                PedidoCompra.Estado.CONFIRMADO,
+            ),
+            (
+                "pedidocompra",
+                "cancelar_pedidos",
+                self.pedido,
+                "estado",
+                PedidoCompra.Estado.CONFIRMADO,
+            ),
+        )
+        for modelo, accion, objeto, campo, valor_inicial in acciones:
+            with self.subTest(accion=accion):
+                if campo == "estado":
+                    type(objeto).objects.filter(pk=objeto.pk).update(
+                        estado=valor_inicial
+                    )
+                else:
+                    type(objeto).objects.filter(pk=objeto.pk).update(
+                        activo=valor_inicial
+                    )
+
+                response = self.enviar_accion(modelo, accion, objeto.pk)
+
+                self.assertEqual(response.status_code, 200)
+                objeto.refresh_from_db()
+                self.assertEqual(getattr(objeto, campo), valor_inicial)
+
+    def test_user_with_change_permission_can_run_write_actions(self):
+        usuario = self.crear_usuario(
+            "editor",
+            [
+                ("change", "proveedor"),
+                ("change", "producto"),
+                ("change", "pedidocompra"),
+            ],
+        )
+        self.client.force_login(usuario)
+
+        response = self.enviar_accion(
+            "pedidocompra", "confirmar_pedidos", self.pedido.pk
+        )
+        self.assertEqual(response.status_code, 302)
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.estado, PedidoCompra.Estado.CONFIRMADO)
+
+        response = self.enviar_accion(
+            "proveedor", "desactivar_proveedores", self.proveedor.pk
+        )
+        self.assertEqual(response.status_code, 302)
+        self.proveedor.refresh_from_db()
+        self.assertFalse(self.proveedor.activo)
+
+        response = self.enviar_accion(
+            "producto", "desactivar_productos", self.producto.pk
+        )
+        self.assertEqual(response.status_code, 302)
+        self.producto.refresh_from_db()
+        self.assertFalse(self.producto.activo)
+
+    def test_user_without_model_permissions_cannot_access_or_run_actions(self):
+        usuario = self.crear_usuario("sin_permisos")
+        self.client.force_login(usuario)
+
+        for modelo in ("proveedor", "producto", "pedidocompra"):
+            with self.subTest(modelo=modelo):
+                response = self.client.get(
+                    reverse(f"admin:purchasing_{modelo}_changelist")
+                )
+                self.assertEqual(response.status_code, 403)
+
+        response = self.enviar_accion(
+            "pedidocompra", "confirmar_pedidos", self.pedido.pk
+        )
+        self.assertEqual(response.status_code, 403)
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.estado, PedidoCompra.Estado.BORRADOR)
 
 
 class ProveedorTests(TestCase):

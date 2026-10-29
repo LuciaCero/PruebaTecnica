@@ -28,11 +28,17 @@ class ProveedorAdmin(ModelAdmin):
 
     actions = ("activar_proveedores", "desactivar_proveedores")
 
-    @admin.action(description="Activar proveedores seleccionados")
+    @admin.action(
+        description="Activar proveedores seleccionados",
+        permissions=["change"],
+    )
     def activar_proveedores(self, request, queryset):
         actualizar_estado_activo(self, request, queryset, True, "proveedor")
 
-    @admin.action(description="Desactivar proveedores seleccionados")
+    @admin.action(
+        description="Desactivar proveedores seleccionados",
+        permissions=["change"],
+    )
     def desactivar_proveedores(self, request, queryset):
         actualizar_estado_activo(self, request, queryset, False, "proveedor")
 
@@ -44,11 +50,17 @@ class ProductoAdmin(ModelAdmin):
     
     actions = ("activar_productos", "desactivar_productos")
 
-    @admin.action(description="Activar productos seleccionados")
+    @admin.action(
+        description="Activar productos seleccionados",
+        permissions=["change"],
+    )
     def activar_productos(self, request, queryset):
         actualizar_estado_activo(self, request, queryset, True, "producto")
 
-    @admin.action(description="Desactivar productos seleccionados")
+    @admin.action(
+        description="Desactivar productos seleccionados",
+        permissions=["change"],
+    )
     def desactivar_productos(self, request, queryset):
         actualizar_estado_activo(self, request, queryset, False, "producto")
 
@@ -86,13 +98,14 @@ class LineaPedidoInlineForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        productos = Producto.objects.filter(activo=True)
-        if self.instance.pk and not self.instance.producto.activo:
-            productos = Producto.objects.filter(
-                Q(activo=True) | Q(pk=self.instance.producto_id)
-            )
-        self.fields["producto"].queryset = productos
-        if not self.instance.pk:
+        if "producto" in self.fields:
+            productos = Producto.objects.filter(activo=True)
+            if self.instance.pk and not self.instance.producto.activo:
+                productos = Producto.objects.filter(
+                    Q(activo=True) | Q(pk=self.instance.producto_id)
+                )
+            self.fields["producto"].queryset = productos
+        if "precio_unitario" in self.fields and not self.instance.pk:
             self.fields["precio_unitario"].required = False
 
     def clean(self):
@@ -105,18 +118,28 @@ class LineaPedidoInlineForm(forms.ModelForm):
 
 
 class PedidoCompraAdminForm(forms.ModelForm):
+    total = forms.DecimalField(
+        label="Total del pedido",
+        max_digits=14,
+        decimal_places=2,
+        required=False,
+        disabled=True,
+    )
+
     class Meta:
         model = PedidoCompra
         fields = "__all__"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.initial["total"] = self.instance.total if self.instance.pk else 0
         proveedores = Proveedor.objects.filter(activo=True)
         if self.instance.pk and not self.instance.proveedor.activo:
             proveedores = Proveedor.objects.filter(
                 Q(activo=True) | Q(pk=self.instance.proveedor_id)
             )
-        self.fields["proveedor"].queryset = proveedores
+        if "proveedor" in self.fields:
+            self.fields["proveedor"].queryset = proveedores
 
 
 class LineaPedidoInline(TabularInline):
@@ -153,12 +176,15 @@ class PedidoCompraAdmin(ModelAdmin):
     # Acciones
     actions = ("confirmar_pedidos", "recibir_pedidos", "cancelar_pedidos")
 
+    @admin.action(permissions=["change"])
     def confirmar_pedidos(self, request, queryset):
         self.aplicar_cambio_estado(request, queryset, "confirmar")
 
+    @admin.action(permissions=["change"])
     def recibir_pedidos(self, request, queryset):
         self.aplicar_cambio_estado(request, queryset, "recibir")
 
+    @admin.action(permissions=["change"])
     def cancelar_pedidos(self, request, queryset):
         self.aplicar_cambio_estado(request, queryset, "cancelar")
 

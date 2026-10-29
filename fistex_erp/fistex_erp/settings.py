@@ -39,7 +39,7 @@ ALLOWED_HOSTS = [
 # Application definition
 
 INSTALLED_APPS = [
-    "unfold",  # importante antes que django.contrib.admin
+    "unfold",   # Importante antes que django.contrib.admin
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
