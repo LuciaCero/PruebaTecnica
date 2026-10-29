@@ -1,10 +1,13 @@
 from django.contrib import admin
+from django.contrib.admin.actions import delete_selected as delete_selected_action
 from django import forms
-from django.db.models import Q
-from unfold.admin import ModelAdmin, TabularInline
-from .models import Proveedor, PedidoCompra, Producto, LineaPedido
 from django.contrib import messages
 from django.core.exceptions import ValidationError
+from django.db.models import Q
+from django.http import HttpResponseRedirect
+from django.urls import reverse
+from unfold.admin import ModelAdmin, TabularInline
+from .models import Proveedor, PedidoCompra, Producto, LineaPedido
 from django.db.models import DecimalField, F, Sum
 from unfold.decorators import display
 from unfold.widgets import UnfoldAdminSelectWidget
@@ -216,7 +219,31 @@ class PedidoCompraAdmin(ModelAdmin):
         return obj.estado, obj.get_estado_display()
 
     # Acciones
-    actions = ("confirmar_pedidos", "recibir_pedidos", "cancelar_pedidos")
+    actions = (
+        "confirmar_pedidos",
+        "recibir_pedidos",
+        "cancelar_pedidos",
+        "delete_selected",
+    )
+
+    @admin.action(
+        description="Eliminar pedidos seleccionados",
+        permissions=["delete"],
+    )
+    def delete_selected(self, request, queryset):
+        try:
+            queryset.validar_borrado()
+            return delete_selected_action(self, request, queryset)
+        except ValidationError as error:
+            self.message_user(
+                request,
+                " ".join(error.messages),
+                level=messages.ERROR,
+            )
+            changelist_url = reverse(
+                f"admin:{self.opts.app_label}_{self.opts.model_name}_changelist"
+            )
+            return HttpResponseRedirect(changelist_url)
 
     @admin.action(permissions=["change"])
     def confirmar_pedidos(self, request, queryset):

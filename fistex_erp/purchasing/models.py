@@ -50,6 +50,7 @@ def normalizar_referencia(valor: str) -> str:
     """Quita espacios y pasa a mayúsculas: ' ab 12 ' -> 'AB12'."""
     return "".join(valor.split()).upper()
 
+
 class Producto(models.Model):
     referencia = models.CharField("referencia", max_length=200, unique=True)
     nombre = models.CharField("nombre comercial", max_length=200)
@@ -89,7 +90,38 @@ class Producto(models.Model):
 # Pedido de compra
 # ==========================================
 
+
+def _validar_borrado_pedidos(pedidos):
+    pedidos_no_borrador = [
+        pedido for pedido in pedidos if pedido.estado != PedidoCompra.Estado.BORRADOR
+    ]
+    if pedidos_no_borrador:
+        impedimentos = ", ".join(
+            f"{pedido} ({pedido.get_estado_display()})"
+            for pedido in pedidos_no_borrador
+        )
+        raise ValidationError(
+            "No se puede borrar la selección porque incluye pedidos que no están "
+            "en estado Borrador. "
+            "No se eliminó ningún pedido. "
+            f"Pedidos que lo impiden: {impedimentos}."
+        )
+
+
+class PedidoCompraQuerySet(models.QuerySet):
+    def validar_borrado(self):
+        _validar_borrado_pedidos(self)
+
+    def delete(self):
+        with transaction.atomic():
+            pedidos = list(self.select_for_update().order_by("pk"))
+            _validar_borrado_pedidos(pedidos)
+            return super().delete()
+
+
 class PedidoCompra(models.Model):
+    objects = PedidoCompraQuerySet.as_manager()
+
     class Estado(models.TextChoices):
         BORRADOR = "borrador", "Borrador"
         CONFIRMADO = "confirmado", "Confirmado"
@@ -300,8 +332,12 @@ class PedidoCompra(models.Model):
         self.validar_pedido_editable()
 
     def delete(self, *args, **kwargs):
-        self.validar_pedido_editable()
-        return super().delete(*args, **kwargs)
+        if self.pk is None:
+            return super().delete(*args, **kwargs)
+        with transaction.atomic():
+            pedido_actual = type(self).objects.select_for_update().get(pk=self.pk)
+            _validar_borrado_pedidos([pedido_actual])
+            return super().delete(*args, **kwargs)
 
 # ==========================================
 # Línea de pedido

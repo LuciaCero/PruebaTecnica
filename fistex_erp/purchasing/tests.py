@@ -257,6 +257,54 @@ class AdminActionPermissionTests(TestCase):
         self.producto.refresh_from_db()
         self.assertFalse(self.producto.activo)
 
+    def test_bulk_delete_action_reports_blocked_orders_without_deleting_anything(self):
+        pedido_borrador = PedidoCompra.objects.create(proveedor=self.proveedor)
+        LineaPedido.objects.create(
+            pedido=pedido_borrador,
+            producto=self.producto,
+            cantidad=1,
+            precio_unitario="10.00",
+        )
+        self.pedido.confirmar()
+        usuario = self.crear_usuario(
+            "borrador_delete",
+            [
+                ("view", "pedidocompra"),
+                ("delete", "pedidocompra"),
+                ("delete", "lineapedido"),
+            ],
+        )
+        self.client.force_login(usuario)
+        response = self.client.post(
+            reverse("admin:purchasing_pedidocompra_changelist"),
+            {
+                "action": "delete_selected",
+                "index": "0",
+                "select_across": "0",
+                "_selected_action": [str(self.pedido.pk), str(pedido_borrador.pk)],
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.redirect_chain,
+            [
+                (
+                    reverse("admin:purchasing_pedidocompra_changelist"),
+                    302,
+                )
+            ],
+        )
+        self.assertContains(response, "No se eliminó ningún pedido")
+        self.assertContains(response, self.pedido.numero)
+        self.assertContains(response, "Confirmado")
+        self.assertContains(response, "selección")
+        self.assertTrue(PedidoCompra.objects.filter(pk=self.pedido.pk).exists())
+        self.assertTrue(PedidoCompra.objects.filter(pk=pedido_borrador.pk).exists())
+        self.assertEqual(self.pedido.lineas.count(), 1)
+        self.assertEqual(pedido_borrador.lineas.count(), 1)
+
     def test_non_draft_orders_are_read_only_in_admin(self):
         usuario = self.crear_usuario(
             "editor_pedidos",
@@ -779,6 +827,36 @@ class LineaPedidoTests(TestCase):
 
         with self.assertRaises(ValidationError):
             self.pedido.delete()
+
+    def test_bulk_delete_rejects_mixed_selection_without_deleting_orders_or_lines(self):
+        pedido_borrador = PedidoCompra.objects.create(proveedor=self.proveedor)
+        LineaPedido.objects.create(
+            pedido=pedido_borrador,
+            producto=self.producto,
+            cantidad=1,
+            precio_unitario="10.00",
+        )
+        self.pedido.confirmar()
+        pedidos = PedidoCompra.objects.filter(
+            pk__in=[self.pedido.pk, pedido_borrador.pk]
+        )
+
+        with self.assertRaises(ValidationError) as error:
+            pedidos.delete()
+
+        self.assertIn(self.pedido.numero, str(error.exception))
+        self.assertIn("Confirmado", str(error.exception))
+        self.assertTrue(PedidoCompra.objects.filter(pk=self.pedido.pk).exists())
+        self.assertTrue(PedidoCompra.objects.filter(pk=pedido_borrador.pk).exists())
+        self.assertEqual(self.pedido.lineas.count(), 1)
+        self.assertEqual(pedido_borrador.lineas.count(), 1)
+
+    def test_bulk_delete_removes_draft_orders_and_their_lines(self):
+        resultado = PedidoCompra.objects.filter(pk=self.pedido.pk).delete()
+
+        self.assertEqual(resultado[0], 2)
+        self.assertFalse(PedidoCompra.objects.filter(pk=self.pedido.pk).exists())
+        self.assertFalse(LineaPedido.objects.filter(pedido_id=self.pedido.pk).exists())
 
     def test_confirmed_order_header_cannot_be_changed(self):
         self.pedido.confirmar()
