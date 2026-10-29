@@ -126,7 +126,20 @@ class PedidoCompra(models.Model):
         ordering = ["-fecha", "-id"]
         verbose_name = "pedido de compra"
         verbose_name_plural = "pedidos de compra"
- 
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(
+                    estado__in=[
+                        "borrador",
+                        "confirmado",
+                        "recibido",
+                        "cancelado",
+                    ]
+                ),
+                name="pedido_estado_valido",
+            ),
+        ]
+
     def __str__(self):
         return self.numero or "Pedido sin guardar"
  
@@ -135,8 +148,12 @@ class PedidoCompra(models.Model):
             pedido_actual = None
             if self.pk is not None:
                 pedido_actual = type(self).objects.select_for_update().get(pk=self.pk)
+                update_fields = kwargs.get("update_fields")
+                if update_fields is not None and "estado" in update_fields:
+                    raise ValidationError(
+                        "El estado solo se puede modificar mediante una transición."
+                    )
                 if pedido_actual.estado != self.Estado.BORRADOR:
-                    update_fields = kwargs.get("update_fields")
                     campos_cabecera = {
                         "proveedor_id": {"proveedor", "proveedor_id"},
                         "fecha": {"fecha"},
@@ -150,6 +167,11 @@ class PedidoCompra(models.Model):
                                 "No se puede modificar la cabecera de un pedido "
                                 "que ya no está en borrador."
                             )
+                self.estado = pedido_actual.estado
+            elif self.estado != self.Estado.BORRADOR:
+                raise ValidationError(
+                    "Un pedido nuevo debe comenzar en estado borrador."
+                )
 
             update_fields = kwargs.get("update_fields")
             proveedor_se_guarda = (
@@ -201,21 +223,39 @@ class PedidoCompra(models.Model):
 
     def cambiar_estado(self, nuevo):
         with transaction.atomic():
-            actual = type(self).objects.select_for_update().get(pk=self.pk).estado
-            if nuevo not in self.TRANSICIONES[actual]:
+            pedido_actual = type(self).objects.select_for_update().get(pk=self.pk)
+            if nuevo not in self.TRANSICIONES.get(pedido_actual.estado, set()):
                 raise ValidationError(
-                    f"No se puede pasar un pedido de '{actual}' a '{nuevo}'."
+                    f"No se puede pasar un pedido de '{pedido_actual.estado}' a '{nuevo}'."
+                )
+            pedido_actual._validar_precondiciones_transicion(nuevo)
+            actualizado = type(self).objects.filter(
+                pk=pedido_actual.pk,
+                estado=pedido_actual.estado,
+            ).update(estado=nuevo)
+            if actualizado != 1:
+                raise ValidationError(
+                    "El estado del pedido cambió durante la transición."
                 )
             self.estado = nuevo
-            self.save(update_fields=["estado"])
+
+    def _validar_precondiciones_transicion(self, nuevo):
+        if nuevo != self.Estado.CONFIRMADO:
+            return
+        if not self.lineas.exists():
+            raise ValidationError(
+                "No se puede confirmar un pedido que no tiene ninguna linea"
+            )
+        if not Proveedor.objects.filter(pk=self.proveedor_id, activo=True).exists():
+            raise ValidationError(
+                "No se puede confirmar un pedido de un proveedor inactivo"
+            )
+        if self.lineas.filter(producto__activo=False).exists():
+            raise ValidationError(
+                "No se puede confirmar un pedido con productos inactivos."
+            )
 
     def confirmar(self):
-        if self.lineas.count() <= 0:
-            raise ValidationError("No se puede confirmar un pedido que no tiene ninguna linea")
-        if not Proveedor.objects.filter(pk=self.proveedor_id, activo=True).exists():
-            raise ValidationError("No se puede confirmar un pedido de un proveedor inactivo")
-        if self.lineas.filter(producto__activo=False).exists():
-            raise ValidationError("No se puede confirmar un pedido con productos inactivos.")
         self.cambiar_estado(self.Estado.CONFIRMADO)
 
     def recibir(self):

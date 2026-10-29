@@ -677,6 +677,9 @@ class LineaPedidoTests(TestCase):
         with self.assertRaises(ValidationError):
             pedido_vacio.confirmar()
 
+        pedido_vacio.refresh_from_db()
+        self.assertEqual(pedido_vacio.estado, PedidoCompra.Estado.BORRADOR)
+
     def test_invalid_order_state_transitions_are_rejected(self):
         with self.assertRaises(ValidationError):
             self.pedido.recibir()
@@ -686,6 +689,51 @@ class LineaPedidoTests(TestCase):
 
         with self.assertRaises(ValidationError):
             self.pedido.cancelar()
+
+    def test_ordinary_save_cannot_restore_a_stale_order_state(self):
+        pedido_obsoleto = PedidoCompra.objects.get(pk=self.pedido.pk)
+        pedido_actual = PedidoCompra.objects.get(pk=self.pedido.pk)
+        pedido_actual.confirmar()
+
+        pedido_obsoleto.save()
+
+        pedido_obsoleto.refresh_from_db()
+        self.assertEqual(pedido_obsoleto.estado, PedidoCompra.Estado.CONFIRMADO)
+
+    def test_ordinary_save_cannot_change_the_order_state(self):
+        self.pedido.estado = PedidoCompra.Estado.CONFIRMADO
+
+        with self.assertRaises(ValidationError):
+            self.pedido.save(update_fields=["estado"])
+
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.estado, PedidoCompra.Estado.BORRADOR)
+
+    def test_ordinary_save_ignores_an_unsaved_state_change(self):
+        fecha_original = self.pedido.fecha
+        self.pedido.estado = PedidoCompra.Estado.CONFIRMADO
+        self.pedido.fecha = fecha_original + timedelta(days=1)
+
+        self.pedido.save()
+
+        self.pedido.refresh_from_db()
+        self.assertEqual(self.pedido.estado, PedidoCompra.Estado.BORRADOR)
+        self.assertEqual(self.pedido.fecha, fecha_original + timedelta(days=1))
+
+    def test_new_order_must_start_as_a_draft(self):
+        pedido = PedidoCompra(
+            proveedor=self.proveedor,
+            estado=PedidoCompra.Estado.RECIBIDO,
+        )
+
+        with self.assertRaises(ValidationError):
+            pedido.save()
+
+    def test_database_rejects_unknown_order_states(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PedidoCompra.objects.filter(pk=self.pedido.pk).update(
+                estado="pendiente"
+            )
 
     def test_canceled_order_cannot_be_received(self):
         self.pedido.cancelar()
