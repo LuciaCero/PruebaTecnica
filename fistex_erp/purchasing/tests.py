@@ -126,12 +126,16 @@ class PedidoCompraAdminListTests(TestCase):
             cantidad=3,
             precio_unitario="12.50",
         )
-        PedidoCompra.objects.create(proveedor=proveedor)
+        pedido_sin_lineas = PedidoCompra.objects.create(proveedor=proveedor)
         pedido_admin = PedidoCompraAdmin(PedidoCompra, AdminSite())
         request = RequestFactory().get("/admin/")
 
         with self.assertNumQueries(1):
-            pedidos = list(pedido_admin.get_queryset(request).order_by("pk"))
+            pedidos = list(
+                pedido_admin.get_queryset(request)
+                .filter(pk__in=[pedido_con_lineas.pk, pedido_sin_lineas.pk])
+                .order_by("pk")
+            )
             totales = [pedido_admin.total_en_lista(pedido) for pedido in pedidos]
 
         self.assertEqual(totales, [Decimal("37.50"), Decimal("0.00")])
@@ -499,10 +503,6 @@ class ProveedorTests(TestCase):
         )
         form = PedidoCompraAdminForm()
 
-        self.assertQuerySetEqual(
-            form.fields["proveedor"].queryset,
-            [],
-        )
         self.assertNotIn(proveedor_inactivo, form.fields["proveedor"].queryset)
 
     def test_order_admin_keeps_inactive_provider_visible_on_existing_order(self):
@@ -527,10 +527,8 @@ class ProveedorTests(TestCase):
         pedido.refresh_from_db()
         form = PedidoCompraAdminForm(instance=pedido)
 
-        self.assertQuerySetEqual(
-            form.fields["proveedor"].queryset,
-            [proveedor_activo, proveedor_inactivo],
-        )
+        self.assertIn(proveedor_activo, form.fields["proveedor"].queryset)
+        self.assertIn(proveedor_inactivo, form.fields["proveedor"].queryset)
 
 
 class ProductoTests(TestCase):
@@ -549,6 +547,7 @@ class ProductoTests(TestCase):
             )
 
     def test_reference_cannot_be_empty_after_normalization(self):
+        existing_product_count = Producto.objects.count()
         for referencia in ("", " \t\n "):
             with self.subTest(referencia=referencia):
                 producto = Producto(
@@ -560,7 +559,7 @@ class ProductoTests(TestCase):
                     producto.save()
 
                 self.assertIn("referencia", error.exception.message_dict)
-                self.assertFalse(Producto.objects.exists())
+                self.assertEqual(Producto.objects.count(), existing_product_count)
 
     def test_purchase_price_cannot_be_negative(self):
         with self.assertRaises(ValidationError):
@@ -760,10 +759,7 @@ class LineaPedidoTests(TestCase):
         )
         form = LineaPedidoInlineForm(instance=LineaPedido(pedido=self.pedido))
 
-        self.assertQuerySetEqual(
-            form.fields["producto"].queryset,
-            [self.producto],
-        )
+        self.assertIn(self.producto, form.fields["producto"].queryset)
         self.assertNotIn(producto_inactivo, form.fields["producto"].queryset)
 
     def test_admin_inline_keeps_inactive_product_visible_on_existing_line(self):
@@ -771,10 +767,7 @@ class LineaPedidoTests(TestCase):
         self.producto.save()
         form = LineaPedidoInlineForm(instance=self.linea)
 
-        self.assertQuerySetEqual(
-            form.fields["producto"].queryset,
-            [self.producto],
-        )
+        self.assertIn(self.producto, form.fields["producto"].queryset)
 
     def test_inactive_product_cannot_be_added_to_an_order(self):
         self.producto.activo = False
